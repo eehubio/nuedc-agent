@@ -49,20 +49,3 @@ export const FEATURES: { key: string; name: string; desc: string; icon: string; 
   { key: "debug", name: "调试助手", desc: "故障定位与测量指引", icon: "🔬", color: "#0ea5e9" },
   { key: "report", name: "报告生成", desc: "按电赛规范一键成稿", icon: "📄", color: "#f59e0b" },
 ];
-
-export const CATEGORY_FILTERS: { key: string; label: string }[] = [
-  { key: "", label: "全部" },
-  { key: "signal", label: "信号调理" },
-  { key: "adc", label: "数据转换" },
-  { key: "mcu", label: "控制器" },
-  { key: "sensor", label: "传感器" },
-  { key: "vision", label: "视觉" },
-  { key: "actuator", label: "执行机构" },
-  { key: "power", label: "电源管理" },
-  { key: "comm", label: "通信模块" },
-];
-
-export const CAT_ICON: Record<string, string> = {
-  signal: "〰️", adc: "🎚️", mcu: "🎛️", sensor: "🌡️", vision: "📷",
-  actuator: "⚙️", power: "🔋", comm: "📶",
-};

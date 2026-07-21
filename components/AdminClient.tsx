@@ -1,23 +1,32 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { CertBadge } from "./pages-core";
+import { CATEGORY_TREE, FLAT_CATEGORIES, categoryLabel, PROTOCOL_ENUM, CERT_STATES, SOURCE_TYPES } from "../data/categories";
 
-/** 编辑后台 —— 对齐 ai-hardware-genesis-platform 的 /admin：
- *  密钥登录 → 治理总览（平均完整度/低分名单/待审核）→ 审核工作流 →
- *  模块 JSON 编辑 / 新增 / 全量导出。密钥即 .env 的 ADMIN_API_KEY。 */
+type Toast = { kind: "ok" | "err"; msg: string } | null;
+const EMPTY: any = {
+  id: "", name: "", category: "sensor.other", version: "1.0.0", description: "",
+  main_chip: "", price: 0, interfaces: [], power: {}, tags: [],
+  usage_notes: [], known_issues: [], compatibility: [], competition_cases: [],
+  schematic_assets: [], code_repositories: [], images: [],
+  certification_status: "DRAFT", source_snapshot: { source: "lab" },
+};
 
 export default function AdminClient() {
   const [key, setKey] = useState("");
   const [authed, setAuthed] = useState(false);
-  const [err, setErr] = useState("");
+  const [loginErr, setLoginErr] = useState("");
+  const [tab, setTab] = useState<"modules" | "categories" | "governance">("modules");
   const [gov, setGov] = useState<any>(null);
   const [mods, setMods] = useState<any[]>([]);
-  const [editing, setEditing] = useState<any>(null);   // { id, json }
-  const [creating, setCreating] = useState(false);
-  const [newJson, setNewJson] = useState("");
-  const [toast, setToast] = useState("");
+  const [filter, setFilter] = useState("");
+  const [catFilter, setCatFilter] = useState("");
+  const [draft, setDraft] = useState<any>(null);
+  const [isNew, setIsNew] = useState(false);
+  const [toast, setToast] = useState<Toast>(null);
 
   const H = useCallback((k: string) => ({ "content-type": "application/json", "X-Api-Key": k }), []);
+  const flash = (kind: "ok" | "err", msg: string) => { setToast({ kind, msg }); setTimeout(() => setToast(null), 2600); };
 
   const load = useCallback(async (k: string) => {
     const g = await fetch("/api/modules/governance", { headers: H(k) });
@@ -33,150 +42,332 @@ export default function AdminClient() {
   }, [load]);
 
   async function login() {
-    setErr("");
-    try {
-      await load(key);
-      sessionStorage.setItem("nuedc_admin_key", key);
-      setAuthed(true);
-    } catch (e: any) { setErr(e.message || "密钥错误"); }
+    setLoginErr("");
+    try { await load(key); sessionStorage.setItem("nuedc_admin_key", key); setAuthed(true); }
+    catch (e: any) { setLoginErr(e.message || "密钥错误"); }
   }
+
+  function openEditor(m: any) { setDraft(JSON.parse(JSON.stringify(m))); setIsNew(false); }
+  function newModule() { setDraft({ ...JSON.parse(JSON.stringify(EMPTY)) }); setIsNew(true); }
 
   async function review(id: string, result: "approved" | "rejected") {
     const r = await fetch(`/api/modules/${id}/review`, { method: "POST", headers: H(key), body: JSON.stringify({ result }) });
     const d = await r.json();
-    setToast(r.ok ? `${id}：${d.from_status} → ${d.to_status}` : d.error);
+    flash(r.ok ? "ok" : "err", r.ok ? `${id}：${d.from_status} → ${d.to_status}` : d.error);
     load(key);
   }
 
-  async function saveEdit() {
-    try {
-      const data = JSON.parse(editing.json);
-      const r = await fetch(`/api/modules/${editing.id}`, { method: "PATCH", headers: H(key), body: JSON.stringify(data) });
-      const d = await r.json();
-      setToast(r.ok ? `${editing.id} 已保存` : d.error);
-      if (r.ok) { setEditing(null); load(key); }
-    } catch { setToast("JSON 格式错误"); }
-  }
-
-  async function create() {
-    try {
-      const data = JSON.parse(newJson);
-      const r = await fetch("/api/modules", { method: "POST", headers: H(key), body: JSON.stringify(data) });
-      const d = await r.json();
-      setToast(r.ok ? `已创建 ${d.id}（DRAFT 待审核）` : d.error);
-      if (r.ok) { setCreating(false); setNewJson(""); load(key); }
-    } catch { setToast("JSON 格式错误"); }
+  async function save() {
+    if (!draft.id || !draft.name) return flash("err", "id 与 name 为必填");
+    const url = isNew ? "/api/modules" : `/api/modules/${draft.id}`;
+    const method = isNew ? "POST" : "PATCH";
+    const body = isNew ? draft : (({ id, ...rest }) => rest)(draft);
+    const r = await fetch(url, { method, headers: H(key), body: JSON.stringify(body) });
+    const d = await r.json();
+    if (r.ok) { flash("ok", isNew ? "已创建（DRAFT 待审核）" : "已保存"); setDraft(null); load(key); }
+    else flash("err", d.error || "保存失败");
   }
 
   function exportAll() {
-    const blob = new Blob([JSON.stringify(mods, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(mods.map(({ _completeness, downloads, rating, ...m }) => m), null, 2)], { type: "application/json" });
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `nuedc-modules-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
+    a.href = URL.createObjectURL(blob); a.download = `nuedc-modules-${new Date().toISOString().slice(0, 10)}.json`; a.click();
   }
 
+  const filtered = useMemo(() => mods.filter((m) =>
+    (!catFilter || String(m.category).startsWith(catFilter)) &&
+    (!filter || `${m.name} ${m.id} ${m.main_chip}`.toLowerCase().includes(filter.toLowerCase()))
+  ), [mods, filter, catFilter]);
+
   if (!authed) return (
-    <div className="page" style={{ maxWidth: 420, paddingTop: 80 }}>
+    <div className="page" style={{ maxWidth: 420, paddingTop: 70 }}>
       <div className="card">
         <h3>模块数据库 · 编辑后台</h3>
-        <p className="hint">请输入管理员密钥（部署环境变量 <code>ADMIN_API_KEY</code>）。实验室账户由 ezPLM 服务端代理接入。</p>
+        <p className="hint">输入管理员密钥（部署环境变量 <code>ADMIN_API_KEY</code>）。</p>
         <input type="password" value={key} onChange={(e) => setKey(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && login()} placeholder="ADMIN_API_KEY"
           style={{ width: "100%", padding: 9, borderRadius: 8, border: "1px solid var(--line)", margin: "8px 0" }} />
-        {err && <div className="issue blocker">{err}</div>}
+        {loginErr && <div className="issue blocker">{loginErr}</div>}
         <button className="btn" style={{ width: "100%" }} onClick={login}>进入后台</button>
       </div>
     </div>
   );
 
   return (
-    <div className="page">
-      {toast && <div className="issue info" onClick={() => setToast("")}>{toast}（点击关闭）</div>}
-
-      <div className="statsbar" style={{ marginBottom: 14 }}>
-        <span><b>{gov?.totalModules}</b> 个模块</span>
-        <span>平均完整度 <b>{gov?.averageCompleteness}%</b></span>
-        <span><b>{gov?.pendingReview?.length ?? 0}</b> 个待审核</span>
-        {gov?.bySource?.map((s: any) => <span key={s.source}>{s.source}: <b>{s.count}</b></span>)}
-        <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <button className="btn ghost sm" onClick={() => setCreating(true)}>＋ 新增模块</button>
-          <button className="btn ghost sm" onClick={exportAll}>⬇ 导出 JSON</button>
-          <button className="btn ghost sm" onClick={() => { sessionStorage.removeItem("nuedc_admin_key"); setAuthed(false); }}>退出</button>
-        </span>
+    <div className="cms">
+      <div className="cms-bar">
+        <b>模块数据库 CMS</b>
+        <div className="seg">
+          <button className={tab === "modules" ? "on" : ""} onClick={() => setTab("modules")}>模块</button>
+          <button className={tab === "categories" ? "on" : ""} onClick={() => setTab("categories")}>分类管理</button>
+          <button className={tab === "governance" ? "on" : ""} onClick={() => setTab("governance")}>数据治理</button>
+        </div>
+        <span style={{ flex: 1 }} />
+        <a className="btn ghost sm" href="/">站点首页</a>
+        <button className="btn ghost sm" onClick={exportAll}>⬇ 导出</button>
+        <button className="btn ghost sm" onClick={() => { sessionStorage.removeItem("nuedc_admin_key"); setAuthed(false); }}>退出</button>
       </div>
 
-      <div className="grid cols-2" style={{ alignItems: "start" }}>
-        <div style={{ display: "grid", gap: 14 }}>
-          <div className="card">
-            <h3>待审核（DRAFT）</h3>
-            {(gov?.pendingReview || []).map((p: any) => (
-              <div key={p.id} className="req-item" style={{ alignItems: "center" }}>
-                <span className="rid">{p.id}</span>
-                <span>{p.name}<span className="chip" style={{ marginLeft: 6 }}>{p.source}</span></span>
-                <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-                  <button className="btn sm ok" onClick={() => review(p.id, "approved")}>通过 →DOCUMENTED</button>
-                  <button className="btn ghost sm" onClick={() => review(p.id, "rejected")}>驳回</button>
-                </span>
+      {tab === "governance" && <Governance gov={gov} onReview={review} />}
+      {tab === "categories" && <Categories mods={mods} />}
+
+      {tab === "modules" && (
+        <div className="cms-body">
+          <div className="cms-list">
+            <button className="btn sm" style={{ width: "100%", marginBottom: 8 }} onClick={newModule}>＋ 新建模块</button>
+            <input placeholder="搜索 名称 / id / 芯片…" value={filter} onChange={(e) => setFilter(e.target.value)}
+              style={{ width: "100%", padding: 7, borderRadius: 7, border: "1px solid var(--line)", marginBottom: 6 }} />
+            <select value={catFilter} onChange={(e) => setCatFilter(e.target.value)}
+              style={{ width: "100%", padding: 7, borderRadius: 7, border: "1px solid var(--line)", marginBottom: 8 }}>
+              <option value="">全部分类</option>
+              {CATEGORY_TREE.map((g) => <option key={g.key} value={g.key}>{g.icon} {g.label}</option>)}
+            </select>
+            <div className="hint" style={{ marginBottom: 6 }}>{filtered.length} / {mods.length} 个</div>
+            {filtered.map((m) => (
+              <div key={m.id} className={"cms-row" + (draft?.id === m.id ? " on" : "")} onClick={() => openEditor(m)}>
+                <div style={{ minWidth: 0 }}>
+                  <div className="rn">{m.name}</div>
+                  <div className="ri">{m.id} · {categoryLabel(m.category)}</div>
+                </div>
+                <div style={{ textAlign: "right", flexShrink: 0 }}>
+                  <CertBadge s={m.certification_status} />
+                  <div className="hint" style={{ fontSize: 11 }}>{m._completeness ?? "—"}%</div>
+                </div>
               </div>
             ))}
-            {!gov?.pendingReview?.length && <p className="hint">没有待审核模块。用户/实验室上传的模块会强制进入这里，审核通过后沿认证状态机逐级推进。</p>}
           </div>
 
-          <div className="card">
-            <h3>低完整度名单（&lt;60 分）</h3>
-            <p className="hint">完整度是透明的加权评分：接口引脚/约束、电源峰值、使用要点、坑点、历届案例、原理图与代码资产等。缺什么补什么。</p>
-            {(gov?.lowCompleteness || []).map((l: any) => (
-              <div key={l.id} className="req-item">
-                <span className="rid">{l.score}</span>
-                <span><b>{l.name}</b><br /><span className="hint">缺：{l.missing.join("、")}</span></span>
-              </div>
-            ))}
-            {!gov?.lowCompleteness?.length && <p className="hint">全部模块完整度达标 ✓</p>}
-          </div>
-        </div>
-
-        <div className="card">
-          <h3>全部模块（含 DRAFT）</h3>
-          <table className="data">
-            <thead><tr><th>模块</th><th>认证</th><th>完整度</th><th></th></tr></thead>
-            <tbody>
-              {mods.map((m: any) => (
-                <tr key={m.id}>
-                  <td><b>{m.name}</b><br /><span className="hint">{m.id}</span></td>
-                  <td><CertBadge s={m.certification_status} /></td>
-                  <td>
-                    <div className="heatbar" style={{ width: 70 }}><i style={{ width: `${m._completeness ?? 0}%` }} /></div>
-                    <span className="hint">{m._completeness ?? "—"}%</span>
-                  </td>
-                  <td style={{ whiteSpace: "nowrap" }}>
-                    <button className="btn ghost sm" onClick={() => setEditing({ id: m.id, json: JSON.stringify(m, null, 2) })}>编辑</button>{" "}
-                    {m.certification_status !== "COMPETITION_READY" && m.certification_status !== "DRAFT" && (
-                      <button className="btn sm" onClick={() => review(m.id, "approved")}>晋级 ↑</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {(editing || creating) && (
-        <div className="modal-mask" onClick={() => { setEditing(null); setCreating(false); }}>
-          <div className="modal" style={{ maxWidth: 760 }} onClick={(e) => e.stopPropagation()}>
-            <h3>{creating ? "新增模块（JSON，按 moduleInputSchema）" : `编辑 ${editing.id}`}</h3>
-            <textarea className="area" style={{ minHeight: 380, fontFamily: "var(--mono)", fontSize: 12 }}
-              value={creating ? newJson : editing.json}
-              onChange={(e) => creating ? setNewJson(e.target.value) : setEditing({ ...editing, json: e.target.value })}
-              placeholder={creating ? '{"id": "sensor-xxx", "name": "…", "category": "sensor.xxx", "interfaces": [...], "power": {...}}' : ""} />
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 10 }}>
-              <button className="btn ghost sm" onClick={() => { setEditing(null); setCreating(false); }}>取消</button>
-              <button className="btn sm" onClick={creating ? create : saveEdit}>{creating ? "创建（进入 DRAFT）" : "保存"}</button>
-            </div>
+          <div className="cms-editor">
+            {draft ? <Editor draft={draft} setDraft={setDraft} isNew={isNew} onSave={save} onCancel={() => setDraft(null)}
+              onReview={!isNew ? review : undefined} />
+              : <div className="cms-empty">← 从左侧选择模块编辑<br />或点「新建模块」</div>}
           </div>
         </div>
       )}
+
+      {toast && <div className={"cms-toast " + toast.kind}>{toast.msg}</div>}
+    </div>
+  );
+}
+
+/* ============ 分区表单编辑器 ============ */
+function Editor({ draft, setDraft, isNew, onSave, onCancel, onReview }: any) {
+  const set = (k: string, v: any) => setDraft({ ...draft, [k]: v });
+  const setNested = (obj: string, k: string, v: any) => setDraft({ ...draft, [obj]: { ...(draft[obj] || {}), [k]: v } });
+  const lines = (arr?: string[]) => (arr || []).join("\n");
+  const parseLines = (s: string) => s.split("\n").map((x) => x.trim()).filter(Boolean);
+
+  // 接口行编辑
+  function updIface(i: number, patch: any) {
+    const ifs = [...(draft.interfaces || [])]; ifs[i] = { ...ifs[i], ...patch }; set("interfaces", ifs);
+  }
+  function addIface() { set("interfaces", [...(draft.interfaces || []), { name: "", interface_type: "UART", role: "either", pins: [], constraints: [] }]); }
+  function delIface(i: number) { set("interfaces", draft.interfaces.filter((_: any, j: number) => j !== i)); }
+
+  // 历届案例行
+  function updCase(i: number, patch: any) { const cs = [...(draft.competition_cases || [])]; cs[i] = { ...cs[i], ...patch }; set("competition_cases", cs); }
+  function addCase() { set("competition_cases", [...(draft.competition_cases || []), { year: new Date().getFullYear(), problem: "", note: "" }]); }
+  function delCase(i: number) { set("competition_cases", draft.competition_cases.filter((_: any, j: number) => j !== i)); }
+
+  return (
+    <div className="editor-form">
+      <div className="ef-head">
+        <h3 style={{ margin: 0 }}>{isNew ? "新建模块" : `编辑 · ${draft.id}`}</h3>
+        <CertBadge s={draft.certification_status} />
+        <span style={{ flex: 1 }} />
+        <button className="btn ghost sm" onClick={onCancel}>取消</button>
+        <button className="btn sm" onClick={onSave}>{isNew ? "创建" : "保存"}</button>
+      </div>
+
+      <section>
+        <h4>基本信息</h4>
+        <div className="ef-grid">
+          <F label="ID（引擎使用，小写/数字/下划线）"><input value={draft.id} disabled={!isNew}
+            onChange={(e) => set("id", e.target.value)} placeholder="sensor-bmp280" /></F>
+          <F label="名称"><input value={draft.name} onChange={(e) => set("name", e.target.value)} /></F>
+          <F label="分类">
+            <select value={draft.category} onChange={(e) => set("category", e.target.value)}>
+              {FLAT_CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </select>
+          </F>
+          <F label="主芯片"><input value={draft.main_chip || ""} onChange={(e) => set("main_chip", e.target.value)} placeholder="BMP280" /></F>
+          <F label="价格 (¥)"><input type="number" value={draft.price ?? 0} onChange={(e) => set("price", Number(e.target.value))} /></F>
+          <F label="版本"><input value={draft.version || "1.0.0"} onChange={(e) => set("version", e.target.value)} /></F>
+          <F label="认证状态">
+            <select value={draft.certification_status} onChange={(e) => set("certification_status", e.target.value)}>
+              {CERT_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </F>
+          <F label="标签（逗号分隔）"><input value={(draft.tags || []).join(", ")}
+            onChange={(e) => set("tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} /></F>
+        </div>
+        <F label="描述"><textarea value={draft.description || ""} onChange={(e) => set("description", e.target.value)} style={{ minHeight: 56 }} /></F>
+        <F label="工作原理（可选）"><textarea value={draft.principle || ""} onChange={(e) => set("principle", e.target.value)} style={{ minHeight: 44 }} /></F>
+      </section>
+
+      <section>
+        <h4>接口定义 <button className="btn ghost sm" onClick={addIface}>＋ 添加接口</button></h4>
+        <p className="hint">接口是规则引擎的输入 —— 电平、5V 容忍、引脚在这里填。</p>
+        {(draft.interfaces || []).map((it: any, i: number) => (
+          <div key={i} className="iface-row">
+            <div className="ef-grid">
+              <F label="接口名"><input value={it.name} onChange={(e) => updIface(i, { name: e.target.value })} placeholder="I2C" /></F>
+              <F label="协议">
+                <select value={it.interface_type} onChange={(e) => updIface(i, { interface_type: e.target.value })}>
+                  {PROTOCOL_ENUM.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </F>
+              <F label="角色">
+                <select value={it.role || "either"} onChange={(e) => updIface(i, { role: e.target.value })}>
+                  {["host", "device", "peer", "either"].map((r) => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </F>
+              <F label="逻辑电平 (V)"><input type="number" step="0.1" value={it.voltage_level ?? ""} onChange={(e) => updIface(i, { voltage_level: e.target.value === "" ? undefined : Number(e.target.value) })} /></F>
+              <F label="最大速率 (bps)"><input type="number" value={it.max_baudrate ?? ""} onChange={(e) => updIface(i, { max_baudrate: e.target.value === "" ? undefined : Number(e.target.value) })} /></F>
+              <F label="I2C 地址"><input value={it.address ?? ""} onChange={(e) => updIface(i, { address: e.target.value || undefined })} placeholder="0x76" /></F>
+            </div>
+            <label className="ck"><input type="checkbox" checked={!!it.five_v_tolerant} onChange={(e) => updIface(i, { five_v_tolerant: e.target.checked })} />5V 容忍</label>
+            <F label="引脚（每行 信号=物理脚，如 SDA=PB7）">
+              <textarea value={(it.pins || []).map((p: any) => `${p.signal}=${p.pin}`).join("\n")} style={{ minHeight: 40 }}
+                onChange={(e) => updIface(i, { pins: parseLines(e.target.value).map((l) => { const [signal, pin] = l.split("="); return { signal: signal?.trim(), pin: (pin || signal)?.trim() }; }) })} />
+            </F>
+            <F label="约束（每行一条）">
+              <textarea value={lines(it.constraints)} style={{ minHeight: 40 }} onChange={(e) => updIface(i, { constraints: parseLines(e.target.value) })} />
+            </F>
+            <button className="btn ghost sm danger" onClick={() => delIface(i)}>删除此接口</button>
+          </div>
+        ))}
+        {!draft.interfaces?.length && <p className="hint">还没有接口。</p>}
+      </section>
+
+      <section>
+        <h4>电源参数</h4>
+        <div className="ef-grid">
+          <F label="供电下限 (V)"><input type="number" step="0.1" value={draft.power?.input_voltage_range?.[0] ?? ""}
+            onChange={(e) => setNested("power", "input_voltage_range", [Number(e.target.value), draft.power?.input_voltage_range?.[1] ?? Number(e.target.value)])} /></F>
+          <F label="供电上限 (V)"><input type="number" step="0.1" value={draft.power?.input_voltage_range?.[1] ?? ""}
+            onChange={(e) => setNested("power", "input_voltage_range", [draft.power?.input_voltage_range?.[0] ?? Number(e.target.value), Number(e.target.value)])} /></F>
+          <F label="典型电流 (mA)"><input type="number" value={draft.power?.typical_current_ma ?? ""} onChange={(e) => setNested("power", "typical_current_ma", e.target.value === "" ? undefined : Number(e.target.value))} /></F>
+          <F label="峰值电流 (mA)"><input type="number" value={draft.power?.peak_current_ma ?? ""} onChange={(e) => setNested("power", "peak_current_ma", e.target.value === "" ? undefined : Number(e.target.value))} /></F>
+        </div>
+        <label className="ck"><input type="checkbox" checked={!!draft.power?.has_onboard_regulator} onChange={(e) => setNested("power", "has_onboard_regulator", e.target.checked)} />板载稳压</label>
+        <label className="ck"><input type="checkbox" checked={!!draft.power?.can_source_power} onChange={(e) => setNested("power", "can_source_power", e.target.checked)} />可对外供电</label>
+      </section>
+
+      <section>
+        <h4>工程经验</h4>
+        <F label="使用要点（每行一条）"><textarea value={lines(draft.usage_notes)} onChange={(e) => set("usage_notes", parseLines(e.target.value))} style={{ minHeight: 52 }} /></F>
+        <F label="已知坑点（每行一条）"><textarea value={lines(draft.known_issues)} onChange={(e) => set("known_issues", parseLines(e.target.value))} style={{ minHeight: 52 }} /></F>
+        <F label="兼容 / 可替换模块 id（每行一个）"><textarea value={lines(draft.compatibility)} onChange={(e) => set("compatibility", parseLines(e.target.value))} style={{ minHeight: 40 }} /></F>
+      </section>
+
+      <section>
+        <h4>历届电赛应用 <button className="btn ghost sm" onClick={addCase}>＋ 添加</button></h4>
+        {(draft.competition_cases || []).map((c: any, i: number) => (
+          <div key={i} className="ef-grid" style={{ alignItems: "end", marginBottom: 6 }}>
+            <F label="年份"><input type="number" value={c.year} onChange={(e) => updCase(i, { year: Number(e.target.value) })} /></F>
+            <F label="题目"><input value={c.problem} onChange={(e) => updCase(i, { problem: e.target.value })} placeholder="A题" /></F>
+            <F label="备注"><input value={c.note || ""} onChange={(e) => updCase(i, { note: e.target.value })} /></F>
+            <button className="btn ghost sm danger" onClick={() => delCase(i)}>删</button>
+          </div>
+        ))}
+      </section>
+
+      <section>
+        <h4>资产与来源 <span className="hint" style={{ fontWeight: 400 }}>（付费门控在 API 层，此处只存 URL）</span></h4>
+        <div className="ef-grid">
+          <F label="来源类型">
+            <select value={draft.source_snapshot?.source || "lab"} onChange={(e) => setNested("source_snapshot", "source", e.target.value)}>
+              {SOURCE_TYPES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </F>
+          <F label="Datasheet URL"><input value={draft.datasheet_url || ""} onChange={(e) => set("datasheet_url", e.target.value)} /></F>
+        </div>
+        <F label="原理图资产（每行一个 URL）"><textarea value={lines(draft.schematic_assets)} onChange={(e) => set("schematic_assets", parseLines(e.target.value))} style={{ minHeight: 36 }} /></F>
+        <F label="代码仓库（每行一个 URL）"><textarea value={lines(draft.code_repositories)} onChange={(e) => set("code_repositories", parseLines(e.target.value))} style={{ minHeight: 36 }} /></F>
+        <F label="图片（每行一个 URL）"><textarea value={lines(draft.images)} onChange={(e) => set("images", parseLines(e.target.value))} style={{ minHeight: 36 }} /></F>
+      </section>
+
+      {onReview && (
+        <section>
+          <h4>审核操作</h4>
+          <p className="hint">通过 → 沿认证状态机晋级一级；驳回 → 退回 DRAFT。</p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn sm ok" onClick={() => onReview(draft.id, "approved")}>通过晋级 ↑</button>
+            <button className="btn ghost sm danger" onClick={() => onReview(draft.id, "rejected")}>驳回</button>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function F({ label, children }: { label: string; children: any }) {
+  return <label className="ef-field"><span>{label}</span>{children}</label>;
+}
+
+/* ============ 分类管理 ============ */
+function Categories({ mods }: { mods: any[] }) {
+  const count = (prefix: string) => mods.filter((m) => String(m.category).startsWith(prefix)).length;
+  return (
+    <div className="page">
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h3>分类体系</h3>
+        <p className="hint">采用「大类 / 子类」两级分层，编码为 <code>大类.子类</code>（如 <code>actuator.motor_driver</code>）。模块选型页的筛选、编辑表单的下拉、方案框图的角色识别都读这份分类。要新增分类，编辑 <code>data/categories.ts</code> 的 <code>CATEGORY_TREE</code> 即可（改动后所有下拉自动更新）。</p>
+      </div>
+      <div className="grid cols-3">
+        {CATEGORY_TREE.map((g) => (
+          <div key={g.key} className="card">
+            <h3>{g.icon} {g.label} <span className="hint" style={{ fontWeight: 400 }}>{count(g.key)} 个</span></h3>
+            {g.children.map((c) => (
+              <div key={c.key} className="req-item" style={{ padding: "5px 0" }}>
+                <span>{c.label}</span>
+                <span style={{ marginLeft: "auto" }} className="chip">{count(c.key)}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ============ 数据治理 ============ */
+function Governance({ gov, onReview }: any) {
+  if (!gov) return <div className="page"><p className="hint">加载中…</p></div>;
+  return (
+    <div className="page">
+      <div className="statsbar" style={{ marginBottom: 14 }}>
+        <span><b>{gov.totalModules}</b> 个模块</span>
+        <span>平均完整度 <b>{gov.averageCompleteness}%</b></span>
+        <span><b>{gov.pendingReview?.length ?? 0}</b> 个待审核</span>
+        {gov.bySource?.map((s: any) => <span key={s.source}>{s.source}: <b>{s.count}</b></span>)}
+      </div>
+      <div className="grid cols-2" style={{ alignItems: "start" }}>
+        <div className="card">
+          <h3>待审核（DRAFT）</h3>
+          {(gov.pendingReview || []).map((p: any) => (
+            <div key={p.id} className="req-item" style={{ alignItems: "center" }}>
+              <span className="rid">{p.id}</span><span>{p.name}<span className="chip" style={{ marginLeft: 6 }}>{p.source}</span></span>
+              <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                <button className="btn sm ok" onClick={() => onReview(p.id, "approved")}>通过</button>
+                <button className="btn ghost sm" onClick={() => onReview(p.id, "rejected")}>驳回</button>
+              </span>
+            </div>
+          ))}
+          {!gov.pendingReview?.length && <p className="hint">没有待审核模块。</p>}
+        </div>
+        <div className="card">
+          <h3>低完整度名单（&lt;60 分）</h3>
+          {(gov.lowCompleteness || []).map((l: any) => (
+            <div key={l.id} className="req-item">
+              <span className="rid">{l.score}</span>
+              <span><b>{l.name}</b><br /><span className="hint">缺：{l.missing.join("、")}</span></span>
+            </div>
+          ))}
+          {!gov.lowCompleteness?.length && <p className="hint">全部达标 ✓</p>}
+        </div>
+      </div>
     </div>
   );
 }

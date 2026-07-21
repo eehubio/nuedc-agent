@@ -137,7 +137,12 @@ GET /api/modules?chip=AD98&minCompleteness=70                 按主芯片 + 数
 ```
 每个返回的模块带 `_completeness`（0~100 透明加权完整度评分，权重见 `lib/module-query.ts`）。
 
-**怎么维护**：打开 **`/admin` 编辑后台**（输入 `ADMIN_API_KEY` 登录），包含：治理总览（模块总数/平均完整度/来源分布）、**待审核工作流**（用户与实验室上传的模块强制进 DRAFT，点「通过」沿认证状态机 DRAFT→DOCUMENTED→…→COMPETITION_READY 逐级晋级，「驳回」退回）、**低完整度名单**（明确列出每个模块缺什么字段）、模块 JSON 在线编辑、新增模块、全量导出 JSON。批量导入用 `data/seed-modules.json` + `npm run db:seed`（upsert 语义，可反复执行）。
+**怎么维护**：打开 **`/admin` 编辑后台**（输入 `ADMIN_API_KEY` 登录），仿 ai-hardware-genesis-platform 的 CMS，分三个标签页：
+- **模块**：左侧列表（可按名称/芯片搜索、按分类过滤）+ 右侧分区表单编辑器。表单把字段拆成基本信息、接口定义（逐行编辑，含协议下拉/电平/5V 容忍勾选/引脚/约束）、电源参数、工程经验（使用要点/坑点/兼容）、历届电赛应用、资产与来源等区块 —— 不再手写 JSON。支持新建、保存、审核晋级、全量导出。
+- **分类管理**：两级分层分类树（大类/子类），每类实时显示模块数量。分类定义在 `data/categories.ts` 的 `CATEGORY_TREE`，新增分类改这一处，模块选型页筛选与编辑表单下拉会同步更新。
+- **数据治理**：模块总数/平均完整度/来源分布、待审核工作流（上传强制进 DRAFT，通过沿认证状态机逐级晋级）、低完整度名单（逐个列出缺失字段）。
+
+批量导入仍用 `data/seed-modules.json` + `npm run db:seed`（upsert，可反复执行）。
 
 ## 权限体系
 

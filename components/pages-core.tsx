@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
-import { PREP_TASKS, KNOWLEDGE_POINTS, TYPICAL_DIRECTIONS, FEATURES, CATEGORY_FILTERS, CAT_ICON } from "../data/prep-content";
+import { PREP_TASKS, KNOWLEDGE_POINTS, TYPICAL_DIRECTIONS, FEATURES } from "../data/prep-content";
+import { CATEGORY_TREE, CAT_ICON, categoryLabel } from "../data/categories";
 import { STAGES, STAGE_LABEL } from "./Platform";
 
 const CERT_LABEL: Record<string, [string, string]> = {
@@ -132,8 +133,9 @@ export function ModulesPage({ ctx }: { ctx: any }) {
     <>
       <div className="filterbar">
         <input placeholder="搜索模块 / 型号 / 功能 / 芯片…" value={q} onChange={(e) => setQ(e.target.value)} />
-        {CATEGORY_FILTERS.map((c) => (
-          <button key={c.key} className={"fchip" + (cat === c.key ? " on" : "")} onClick={() => setCat(c.key)}>{c.label}</button>
+        <button className={"fchip" + (cat === "" ? " on" : "")} onClick={() => setCat("")}>全部</button>
+        {CATEGORY_TREE.map((c) => (
+          <button key={c.key} className={"fchip" + (cat === c.key ? " on" : "")} onClick={() => setCat(c.key)}>{c.icon} {c.label}</button>
         ))}
         <span className="hint" style={{ marginLeft: "auto" }}>
           已选用 {ctx.shortlist.length} 个 · 生成方案时优先考虑
