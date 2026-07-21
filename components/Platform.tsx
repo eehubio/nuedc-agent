@@ -21,8 +21,8 @@ const NAV = [
   { key: "wiring",   label: "电路连线", icon: "🔌" },
   { key: "code",     label: "代码生成", icon: "⌨️" },
   { key: "debug",    label: "调试助手", icon: "🔬" },
-  { key: "report",   label: "报告生成", icon: "📄" },
   { key: "projects", label: "我的项目", icon: "📁" },
+  { key: "report",   label: "报告生成", icon: "📄" },
 ] as const;
 const NAV_SOON = [
   { label: "仿真验证", icon: "📈" },
@@ -317,6 +317,16 @@ export default function Platform({ embed }: { embed: boolean }) {
           <span className="stagepill">{STAGE_LABEL[stage] || stage}</span>
           <button className="btn ghost sm" onClick={resetProject}>新建项目</button>
         </header>
+
+        {page !== "home" && (
+          <nav className="worktabs" aria-label="工作流程">
+            {NAV.filter((n) => n.key !== "home").map((n) => (
+              <button key={n.key} className={page === n.key ? "active" : ""} onClick={() => setPage(n.key)}>
+                <span className="ic">{n.icon}</span>{n.label}
+              </button>
+            ))}
+          </nav>
+        )}
 
         <div className="page">
           {page === "home" && <HomePage ctx={ctx} />}

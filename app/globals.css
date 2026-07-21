@@ -103,6 +103,20 @@ input, textarea, select { font: inherit; color: var(--ink); }
 .btn.ok { background: var(--ok); }
 
 .page { padding: 20px 22px 40px; max-width: 1240px; width: 100%; margin: 0 auto; }
+
+/* 横向工作流 TAB 条（功能页顶部） */
+.worktabs {
+  display: flex; gap: 2px; background: var(--card); border-bottom: 1px solid var(--line);
+  padding: 0 16px; overflow-x: auto; position: sticky; top: 55px; z-index: 15;
+}
+.worktabs button {
+  border: 0; background: none; padding: 12px 16px; font-size: 13.5px; color: #5a6a85;
+  border-bottom: 2px solid transparent; white-space: nowrap; display: flex; align-items: center; gap: 6px;
+}
+.worktabs button .ic { font-size: 15px; }
+.worktabs button:hover { color: var(--blue-deep); }
+.worktabs button.active { color: var(--blue); font-weight: 700; border-bottom-color: var(--blue); }
+@media (max-width: 780px) { .worktabs { top: 0; } }
 .grid { display: grid; gap: 14px; }
 .cols-2 { grid-template-columns: 1fr 1fr; }
 .cols-3 { grid-template-columns: repeat(3, 1fr); }
