@@ -12,7 +12,7 @@ for (const item of raw) {
   await db().execute({
     sql: `INSERT INTO modules (id, name, category, version, certification_status, source_type, price, data)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET data=excluded.data, certification_status=excluded.certification_status, updated_at=datetime('now')`,
+          ON CONFLICT(id) DO UPDATE SET data=excluded.data, certification_status=excluded.certification_status, updated_at=now()`,
     args: [m.id, m.name, m.category, m.version, m.certification_status, m.source_snapshot?.source || "lab", m.price, JSON.stringify(m)],
   });
   ok++;

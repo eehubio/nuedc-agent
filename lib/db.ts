@@ -1,15 +1,41 @@
-import { createClient, type Client } from "@libsql/client";
+import { neon } from "@neondatabase/serverless";
 
-let _db: Client | null = null;
+/**
+ * Neon Postgres 数据层。
+ * 对外保持与原 libsql 相同的接口：db().execute(sql | { sql, args }) → { rows }
+ * 这样上层 21 处调用点无需改动；`?` 占位符在此处自动转换为 Postgres 的 $1..$n。
+ */
 
-export function db(): Client {
-  if (_db) return _db;
-  const url = process.env.TURSO_DATABASE_URL || "file:local.db";
-  _db = createClient({
-    url,
-    authToken: process.env.TURSO_AUTH_TOKEN || undefined,
-  });
-  return _db;
+type Stmt = string | { sql: string; args?: unknown[] };
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _sql: any = null;
+
+function conn() {
+  if (_sql) return _sql;
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    throw new Error(
+      "缺少 DATABASE_URL。请在 Neon 控制台复制连接串（postgresql://...），本地写入 .env.local，线上配置到 Vercel 环境变量。"
+    );
+  }
+  _sql = neon(url);
+  return _sql;
+}
+
+function toPgPlaceholders(sql: string): string {
+  let i = 0;
+  return sql.replace(/\?/g, () => `$${++i}`);
+}
+
+export function db() {
+  return {
+    async execute(stmt: Stmt): Promise<{ rows: Record<string, unknown>[] }> {
+      const s = typeof stmt === "string" ? { sql: stmt, args: [] as unknown[] } : stmt;
+      const rows = await conn().query(toPgPlaceholders(s.sql), (s.args ?? []) as unknown[]);
+      return { rows: (Array.isArray(rows) ? rows : (rows?.rows ?? [])) as Record<string, unknown>[] };
+    },
+  };
 }
 
 export const SCHEMA_SQL = `
@@ -20,12 +46,12 @@ CREATE TABLE IF NOT EXISTS modules (
   version TEXT DEFAULT '1.0.0',
   certification_status TEXT DEFAULT 'DRAFT',
   source_type TEXT DEFAULT 'lab',
-  price REAL DEFAULT 0,
-  data TEXT NOT NULL,               -- 完整模块 JSON（moduleInputSchema）
+  price DOUBLE PRECISION DEFAULT 0,
+  data TEXT NOT NULL,
   downloads INTEGER DEFAULT 0,
-  rating REAL DEFAULT 0,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
+  rating DOUBLE PRECISION DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_modules_cat ON modules(category);
 CREATE INDEX IF NOT EXISTS idx_modules_cert ON modules(certification_status);
@@ -35,19 +61,19 @@ CREATE TABLE IF NOT EXISTS module_reviews (
   module_id TEXT NOT NULL,
   reviewer TEXT NOT NULL,
   from_status TEXT, to_status TEXT,
-  result TEXT NOT NULL,             -- approved | changes_required | rejected
+  result TEXT NOT NULL,
   issues TEXT DEFAULT '[]',
-  created_at TEXT DEFAULT (datetime('now'))
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS projects (
   project_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   stage TEXT DEFAULT 'PREPARATION',
-  problem_text TEXT,                -- 赛题原文
-  ezplm_project_id TEXT,            -- 关联 ezPLM 项目
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
+  problem_text TEXT,
+  ezplm_project_id TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS artifacts (
@@ -57,8 +83,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
   version INTEGER DEFAULT 1,
   status TEXT DEFAULT 'draft',
   created_by TEXT,
-  content TEXT NOT NULL,            -- JSON
-  created_at TEXT DEFAULT (datetime('now'))
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_proj ON artifacts(project_id, type);
 
@@ -68,17 +94,17 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   agent_type TEXT NOT NULL,
   objective TEXT,
   input TEXT, output TEXT,
-  status TEXT DEFAULT 'ok',         -- ok | error | blocked_by_stage
+  status TEXT DEFAULT 'ok',
   duration_ms INTEGER,
-  created_at TEXT DEFAULT (datetime('now'))
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id BIGSERIAL PRIMARY KEY,
   event_type TEXT NOT NULL,
   project_id TEXT, task_id TEXT,
   payload TEXT DEFAULT '{}',
-  created_at TEXT DEFAULT (datetime('now'))
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 `;
 

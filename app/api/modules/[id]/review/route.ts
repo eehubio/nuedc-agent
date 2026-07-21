@@ -30,7 +30,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const data = JSON.parse(String(rs.rows[0].data));
   data.certification_status = to;
   await db().execute({
-    sql: "UPDATE modules SET certification_status=?, data=?, updated_at=datetime('now') WHERE id=?",
+    sql: "UPDATE modules SET certification_status=?, data=?, updated_at=now() WHERE id=?",
     args: [to, JSON.stringify(data), params.id],
   });
   await db().execute({

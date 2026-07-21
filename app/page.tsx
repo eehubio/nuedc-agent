@@ -1,5 +1,5 @@
-import Workspace from "@/components/Workspace";
+import Platform from "../components/Platform";
 
-export default function Page() {
-  return <Workspace embed={false} />;
+export default function Home() {
+  return <Platform embed={false} />;
 }

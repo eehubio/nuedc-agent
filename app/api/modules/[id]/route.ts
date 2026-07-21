@@ -32,7 +32,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   if (!rs.rows.length) return NextResponse.json({ error: "模块不存在" }, { status: 404 });
   const merged = { ...JSON.parse(String(rs.rows[0].data)), ...parsed.data };
   await db().execute({
-    sql: "UPDATE modules SET name=?, category=?, version=?, price=?, data=?, updated_at=datetime('now') WHERE id=?",
+    sql: "UPDATE modules SET name=?, category=?, version=?, price=?, data=?, updated_at=now() WHERE id=?",
     args: [merged.name, merged.category, merged.version, merged.price ?? 0, JSON.stringify(merged), params.id],
   });
   return NextResponse.json({ ok: true });

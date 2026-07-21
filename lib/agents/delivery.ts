@@ -111,6 +111,7 @@ registerAgent("report_composer", async (input) => {
 【BOM】${JSON.stringify(bom || {}).slice(0, 3000)}
 【测试结果】${JSON.stringify(test_results || "（暂无，请占位）").slice(0, 3000)}
 【调试记录摘要】${JSON.stringify(debug_notes || []).slice(0, 2000)}
+【代码文件清单】${JSON.stringify(input.code_files || "（未提供，附录中省略代码清单）").slice(0, 1500)}
 【队伍信息】${JSON.stringify(team || {})}`,
       },
     ],

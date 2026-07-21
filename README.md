@@ -4,17 +4,17 @@
 
 覆盖需求：物料清单整理 · 题目预测 · 模块数据库（淘宝/实验室/官方，上传审批）· 原理图/接口/图片/代码仓库 · 自动构建方案 · 代码生成 · 调试助手（LabSight）· 报告生成。
 
-技术栈与 [eehubio/ai-hardware-genesis-platform](https://github.com/eehubio/ai-hardware-genesis-platform) 保持一致（Next.js 14 + @libsql/client + zod），模块 schema 兼容其枚举体系，两库数据可互导；方案生成流程参考 [eehubio/ai-hardware-genesis](https://github.com/eehubio/ai-hardware-genesis) 的渐进式需求确认与组件推荐模式。
+技术栈与 [eehubio/ai-hardware-genesis-platform](https://github.com/eehubio/ai-hardware-genesis-platform) 保持一致（Next.js 14 + Neon Postgres + zod），模块 schema 兼容其枚举体系，两库数据可互导；方案生成流程参考 [eehubio/ai-hardware-genesis](https://github.com/eehubio/ai-hardware-genesis) 的渐进式需求确认与组件推荐模式。
 
 ---
 
 ## 核心设计（为什么不是"一个聊天机器人"）
 
 ```
-┌────────────────────────────────────────────────────┐
-│  工作区：赛题 │ 预测 │ 方案 │ 模块BOM │ 代码 │ 调试 │ 报告  │
-│  签名元素：项目状态机刻度条（备赛 → … → 提交）           │
-└─────────────────────┬──────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ 学生备赛平台：首页 │ 题目预测 │ 方案生成(对话式) │ 模块选型   │
+│              │ 电路连线 │ 代码生成 │ 调试助手 │ 报告 │ 项目 │
+└─────────────────────┬────────────────────────────────────┘
                       │ POST /api/agent
               总控编排 Orchestrator
                       │ （状态门禁：项目阶段决定可调用的 Agent）
@@ -26,7 +26,7 @@
                        procurement_planner
                       │
         ┌─────────────┼─────────────┐
-        LLM 路由       规则引擎        libsql 数据库
+        LLM 路由       规则引擎        Neon Postgres
    （Anthropic/OpenAI  （不用 LLM：    modules / projects /
     兼容/Gemini 可切）   电平·引脚·电源·  artifacts / agent_runs /
                         备料数量·预测评分） module_reviews / events
@@ -47,21 +47,16 @@ npm run db:init && npm run db:seed
 npm run dev                    # http://localhost:3000
 ```
 
-不配数据库时默认使用 `file:local.db`（本地 SQLite 文件）。
+数据库使用 Neon Postgres：在 https://neon.tech 建库后把连接串填入 `DATABASE_URL`（本地开发建议用 Neon 的 dev 分支，免费额度足够）。
 
 ## 部署到 Vercel
 
-1. 创建 [Turso](https://turso.tech) 数据库（Vercel Serverless 无持久文件系统，必须用外部库）：
-   ```bash
-   turso db create nuedc-agent
-   turso db show nuedc-agent --url      # → TURSO_DATABASE_URL
-   turso db tokens create nuedc-agent   # → TURSO_AUTH_TOKEN
-   ```
-2. `vercel` 部署（或连 GitHub 仓库），在 Vercel 环境变量里配置 `.env.example` 中的项。
+1. 在 [Neon](https://neon.tech) 创建数据库，复制连接串（`postgresql://...`）。
+2. `vercel` 部署（或连 GitHub 仓库），在 Vercel 环境变量里配置 `.env.example` 中的项（至少 `DATABASE_URL`、`LLM_PROVIDER`、对应的 LLM Key）。
 3. 首次部署后本地跑一次初始化（指向线上库）：
    ```bash
-   TURSO_DATABASE_URL=... TURSO_AUTH_TOKEN=... npm run db:init
-   TURSO_DATABASE_URL=... TURSO_AUTH_TOKEN=... npm run db:seed
+   DATABASE_URL=postgresql://... npm run db:init
+   DATABASE_URL=postgresql://... npm run db:seed
    ```
 
 `vercel.json` 已把 `/api/agent` 与 `/api/report` 的超时提到 120s（方案与报告生成较慢）。
@@ -121,6 +116,10 @@ curl -X POST /api/agent -d '{"agent":"problem_interpreter","input":{"problem_tex
 curl -X POST /api/agent -d '{"agent":"labsight_debug","input":{"symptom":"电机启动后MCU复位","logs":"…","images":[{"media_type":"image/jpeg","data_base64":"…"}]}}'
 ```
 
+## 前端交互（面向参赛学生）
+
+方案生成页采用 **对话式渐进流程**（参考 ai-hardware-genesis 的操作逻辑）：粘贴赛题 → 助手解析为可核对的指标清单并标出歧义 → 人工确认 → 生成两套取舍不同的候选方案，每套附 **自动布局的 SVG 方案框图**（连线按接口预检结果着色）与优劣对比 → 人工采用一套后解锁 BOM / 连线检查 / 代码 / 报告。首页的「典型应用方向」卡片可一键带示例需求进入该流程；「模块选型」页选用的模块会在方案生成时被优先考虑。
+
 ## 权限体系
 
 | 能力 | free | paid | lab | admin |
@@ -140,15 +139,18 @@ curl -X POST /api/agent -d '{"agent":"labsight_debug","input":{"symptom":"电机
 ```
 lib/types.ts              项目状态机 · Agent 类型 · Task/Artifact 对象 · 模块认证状态
 lib/module-schema.ts      模块 zod schema（兼容 ai-hardware-genesis-platform）
-lib/db.ts                 libsql + 建表 SQL
+lib/db.ts                 Neon Postgres + 建表 SQL
 lib/llm.ts                三提供商 LLM 抽象 + JSON 输出保障
 lib/auth.ts               分级鉴权与付费门控
 lib/rules/                规则引擎（接口检查 / 备料数量 / 预测评分）
 lib/agents/               base（注册表·门禁·落库）+ planning + engineering + delivery
 app/api/                  agent / modules(+review) / projects / report
-components/Workspace.tsx  七页签工作区 + 状态刻度条 + 智能体面板
+components/Platform.tsx   平台壳：侧边栏导航 + 项目/阶段 + 全部 Agent 动作
+components/pages-core.tsx 首页 / 题目预测 / 模块选型 / 我的项目
+components/pages-build.tsx 方案生成(对话式+SVG框图) / 电路连线 / 代码 / 调试 / 报告
+data/prep-content.ts      首页策展内容（备赛任务/知识点/典型方向）
 public/ezplm-embed.js     ezPLM 嵌入脚本（iframe + postMessage 桥）
-data/seed-modules.json    种子模块（MSPM0 / K230 / TB6612 / MPU6050 / TPS5430 / nRF24）
+data/seed-modules.json    10 个种子模块（MSPM0/K230/TB6612/MPU6050/TPS5430/nRF24/AD9833/AD8336/ADS1256/OPA2277）
 ```
 
 ## 路线图（对应设计文档分期）

@@ -8,21 +8,101 @@
     "description": "TI 官方 LaunchPad，Cortex-M0+ 80MHz，电赛官方指定主控。板载 XDS110 调试器。",
     "principle": "Cortex-M0+ 内核，含 12bit 4Msps ADC、DAC、OPA、比较器，适合信号链类题目。",
     "interfaces": [
-      { "name": "UART0", "interface_type": "UART", "role": "peer", "voltage_level": 3.3, "five_v_tolerant": false, "max_baudrate": 3000000, "pins": [{ "signal": "TX", "pin": "PA10" }, { "signal": "RX", "pin": "PA11" }], "constraints": ["not_5v_tolerant"] },
-      { "name": "I2C0", "interface_type": "I2C", "role": "host", "voltage_level": 3.3, "pins": [{ "signal": "SDA", "pin": "PA0" }, { "signal": "SCL", "pin": "PA1" }], "constraints": [] },
-      { "name": "SPI0", "interface_type": "SPI", "role": "host", "voltage_level": 3.3, "pins": [], "constraints": [] },
-      { "name": "ADC0", "interface_type": "ADC", "role": "host", "voltage_level": 3.3, "pins": [], "constraints": ["输入不得超过 VREF"] }
+      {
+        "name": "UART0",
+        "interface_type": "UART",
+        "role": "peer",
+        "voltage_level": 3.3,
+        "five_v_tolerant": false,
+        "max_baudrate": 3000000,
+        "pins": [
+          {
+            "signal": "TX",
+            "pin": "PA10"
+          },
+          {
+            "signal": "RX",
+            "pin": "PA11"
+          }
+        ],
+        "constraints": [
+          "not_5v_tolerant"
+        ]
+      },
+      {
+        "name": "I2C0",
+        "interface_type": "I2C",
+        "role": "host",
+        "voltage_level": 3.3,
+        "pins": [
+          {
+            "signal": "SDA",
+            "pin": "PA0"
+          },
+          {
+            "signal": "SCL",
+            "pin": "PA1"
+          }
+        ],
+        "constraints": []
+      },
+      {
+        "name": "SPI0",
+        "interface_type": "SPI",
+        "role": "host",
+        "voltage_level": 3.3,
+        "pins": [],
+        "constraints": []
+      },
+      {
+        "name": "ADC0",
+        "interface_type": "ADC",
+        "role": "host",
+        "voltage_level": 3.3,
+        "pins": [],
+        "constraints": [
+          "输入不得超过 VREF"
+        ]
+      }
     ],
-    "power": { "input_voltage_range": [5, 5], "recommended_voltage": 5, "typical_current_ma": 60, "peak_current_ma": 120, "has_onboard_regulator": true },
+    "power": {
+      "input_voltage_range": [
+        5,
+        5
+      ],
+      "recommended_voltage": 5,
+      "typical_current_ma": 60,
+      "peak_current_ma": 120,
+      "has_onboard_regulator": true
+    },
     "datasheet_url": "https://www.ti.com/product/MSPM0G3507",
-    "code_repositories": ["https://github.com/TexasInstruments/mspm0-sdk"],
-    "usage_notes": ["SysConfig 配置引脚复用，注意 Timer 与 PWM 通道映射", "GPIO 非 5V 容忍，接 5V 外设必须电平转换"],
-    "known_issues": ["部分批次 XDS110 固件需升级后才能在 CCS 12 下识别"],
-    "competition_cases": [{ "year": 2024, "problem": "H题", "note": "官方指定主控" }],
+    "code_repositories": [
+      "https://github.com/TexasInstruments/mspm0-sdk"
+    ],
+    "usage_notes": [
+      "SysConfig 配置引脚复用，注意 Timer 与 PWM 通道映射",
+      "GPIO 非 5V 容忍，接 5V 外设必须电平转换"
+    ],
+    "known_issues": [
+      "部分批次 XDS110 固件需升级后才能在 CCS 12 下识别"
+    ],
+    "competition_cases": [
+      {
+        "year": 2024,
+        "problem": "H题",
+        "note": "官方指定主控"
+      }
+    ],
     "certification_status": "COMPETITION_READY",
-    "source_snapshot": { "source": "official" },
+    "source_snapshot": {
+      "source": "official"
+    },
     "price": 69,
-    "tags": ["主控", "TI", "官方器件"]
+    "tags": [
+      "主控",
+      "TI",
+      "官方器件"
+    ]
   },
   {
     "id": "vision-k230-canmv",
@@ -32,19 +112,74 @@
     "main_chip": "K230",
     "description": "RISC-V 双核 AI 视觉模块，支持 YOLO 部署与 CanMV(MicroPython)，可做循迹/二维码/目标识别。",
     "interfaces": [
-      { "name": "UART1", "interface_type": "UART", "role": "peer", "voltage_level": 3.3, "five_v_tolerant": false, "max_baudrate": 3000000, "pins": [{ "signal": "TX", "pin": "P3" }, { "signal": "RX", "pin": "P4" }], "constraints": ["not_5v_tolerant"] },
-      { "name": "CSI0", "interface_type": "CSI", "role": "host", "pins": [], "constraints": [] }
+      {
+        "name": "UART1",
+        "interface_type": "UART",
+        "role": "peer",
+        "voltage_level": 3.3,
+        "five_v_tolerant": false,
+        "max_baudrate": 3000000,
+        "pins": [
+          {
+            "signal": "TX",
+            "pin": "P3"
+          },
+          {
+            "signal": "RX",
+            "pin": "P4"
+          }
+        ],
+        "constraints": [
+          "not_5v_tolerant"
+        ]
+      },
+      {
+        "name": "CSI0",
+        "interface_type": "CSI",
+        "role": "host",
+        "pins": [],
+        "constraints": []
+      }
     ],
-    "power": { "input_voltage_range": [4.6, 5.5], "recommended_voltage": 5, "typical_current_ma": 450, "peak_current_ma": 900 },
-    "code_repositories": ["https://github.com/kendryte/canmv_k230"],
-    "usage_notes": ["峰值电流接近 1A，禁止与电机共用小电流 5V 轨", "识别帧率与分辨率需权衡，赛场光照要现场标定"],
-    "known_issues": ["部分固件版本 UART DMA 大包发送丢字节，建议分包"],
-    "compatibility": ["vision-openmv-h7"],
-    "competition_cases": [{ "year": 2025, "problem": "视觉类", "note": "官方器件清单新增" }],
+    "power": {
+      "input_voltage_range": [
+        4.6,
+        5.5
+      ],
+      "recommended_voltage": 5,
+      "typical_current_ma": 450,
+      "peak_current_ma": 900
+    },
+    "code_repositories": [
+      "https://github.com/kendryte/canmv_k230"
+    ],
+    "usage_notes": [
+      "峰值电流接近 1A，禁止与电机共用小电流 5V 轨",
+      "识别帧率与分辨率需权衡，赛场光照要现场标定"
+    ],
+    "known_issues": [
+      "部分固件版本 UART DMA 大包发送丢字节，建议分包"
+    ],
+    "compatibility": [
+      "vision-openmv-h7"
+    ],
+    "competition_cases": [
+      {
+        "year": 2025,
+        "problem": "视觉类",
+        "note": "官方器件清单新增"
+      }
+    ],
     "certification_status": "FUNCTION_TESTED",
-    "source_snapshot": { "source": "official" },
+    "source_snapshot": {
+      "source": "official"
+    },
     "price": 399,
-    "tags": ["视觉", "AI", "摄像头"]
+    "tags": [
+      "视觉",
+      "AI",
+      "摄像头"
+    ]
   },
   {
     "id": "motor-tb6612-dual",
@@ -54,17 +189,76 @@
     "main_chip": "TB6612FNG",
     "description": "双路 1.2A（峰值 3.2A）直流电机驱动，替代 L298N 的低压差方案。",
     "interfaces": [
-      { "name": "PWMA", "interface_type": "PWM", "role": "device", "voltage_level": 3.3, "five_v_tolerant": true, "pins": [{ "signal": "PWMA", "pin": "PWMA" }], "constraints": ["PWM ≤ 100kHz"] },
-      { "name": "AIN", "interface_type": "GPIO", "role": "device", "voltage_level": 3.3, "five_v_tolerant": true, "pins": [{ "signal": "AIN1", "pin": "AIN1" }, { "signal": "AIN2", "pin": "AIN2" }], "constraints": [] }
+      {
+        "name": "PWMA",
+        "interface_type": "PWM",
+        "role": "device",
+        "voltage_level": 3.3,
+        "five_v_tolerant": true,
+        "pins": [
+          {
+            "signal": "PWMA",
+            "pin": "PWMA"
+          }
+        ],
+        "constraints": [
+          "PWM ≤ 100kHz"
+        ]
+      },
+      {
+        "name": "AIN",
+        "interface_type": "GPIO",
+        "role": "device",
+        "voltage_level": 3.3,
+        "five_v_tolerant": true,
+        "pins": [
+          {
+            "signal": "AIN1",
+            "pin": "AIN1"
+          },
+          {
+            "signal": "AIN2",
+            "pin": "AIN2"
+          }
+        ],
+        "constraints": []
+      }
     ],
-    "power": { "input_voltage_range": [4.5, 13.5], "typical_current_ma": 1200, "peak_current_ma": 3200, "has_onboard_regulator": false },
-    "usage_notes": ["VM（电机电源）与 VCC（逻辑电源）必须分开供电", "STBY 引脚需拉高才工作，最常见的\"不转\"原因"],
-    "known_issues": ["淘宝部分板卡丝印 AIN/BIN 标反，先万用表确认"],
-    "competition_cases": [{ "year": 2023, "problem": "小车类", "note": "循迹小车标准配置" }],
+    "power": {
+      "input_voltage_range": [
+        4.5,
+        13.5
+      ],
+      "typical_current_ma": 1200,
+      "peak_current_ma": 3200,
+      "has_onboard_regulator": false
+    },
+    "usage_notes": [
+      "VM（电机电源）与 VCC（逻辑电源）必须分开供电",
+      "STBY 引脚需拉高才工作，最常见的\"不转\"原因"
+    ],
+    "known_issues": [
+      "淘宝部分板卡丝印 AIN/BIN 标反，先万用表确认"
+    ],
+    "competition_cases": [
+      {
+        "year": 2023,
+        "problem": "小车类",
+        "note": "循迹小车标准配置"
+      }
+    ],
     "certification_status": "COMPETITION_READY",
-    "source_snapshot": { "source": "taobao", "seller": "示例店铺", "claimed_chip": "TB6612FNG", "identified_chip": "TB6612FNG" },
+    "source_snapshot": {
+      "source": "taobao",
+      "seller": "示例店铺",
+      "claimed_chip": "TB6612FNG",
+      "identified_chip": "TB6612FNG"
+    },
     "price": 8.5,
-    "tags": ["电机驱动", "小车"]
+    "tags": [
+      "电机驱动",
+      "小车"
+    ]
   },
   {
     "id": "imu-mpu6050",
@@ -74,16 +268,53 @@
     "main_chip": "MPU6050",
     "description": "三轴加速度 + 三轴陀螺仪，I2C 接口，姿态解算入门标配。",
     "interfaces": [
-      { "name": "I2C", "interface_type": "I2C", "role": "device", "voltage_level": 3.3, "address": "0x68", "pins": [{ "signal": "SDA", "pin": "SDA" }, { "signal": "SCL", "pin": "SCL" }], "constraints": ["AD0 拉高时地址变 0x69"] }
+      {
+        "name": "I2C",
+        "interface_type": "I2C",
+        "role": "device",
+        "voltage_level": 3.3,
+        "address": "0x68",
+        "pins": [
+          {
+            "signal": "SDA",
+            "pin": "SDA"
+          },
+          {
+            "signal": "SCL",
+            "pin": "SCL"
+          }
+        ],
+        "constraints": [
+          "AD0 拉高时地址变 0x69"
+        ]
+      }
     ],
-    "power": { "input_voltage_range": [3, 5], "typical_current_ma": 4 },
-    "usage_notes": ["上电需等待 100ms 再初始化", "解算建议 Mahony/Kalman，纯积分漂移大"],
-    "known_issues": ["部分淘宝板为翻新片，零偏温漂大，赛前逐块标定"],
-    "compatibility": ["imu-bno085"],
+    "power": {
+      "input_voltage_range": [
+        3,
+        5
+      ],
+      "typical_current_ma": 4
+    },
+    "usage_notes": [
+      "上电需等待 100ms 再初始化",
+      "解算建议 Mahony/Kalman，纯积分漂移大"
+    ],
+    "known_issues": [
+      "部分淘宝板为翻新片，零偏温漂大，赛前逐块标定"
+    ],
+    "compatibility": [
+      "imu-bno085"
+    ],
     "certification_status": "FUNCTION_TESTED",
-    "source_snapshot": { "source": "taobao" },
+    "source_snapshot": {
+      "source": "taobao"
+    },
     "price": 6,
-    "tags": ["IMU", "姿态"]
+    "tags": [
+      "IMU",
+      "姿态"
+    ]
   },
   {
     "id": "power-tps5430-buck",
@@ -93,12 +324,31 @@
     "main_chip": "TPS5430",
     "description": "输入 5.5-36V，输出可调，3A 连续。给主控/视觉供电的常用前级。",
     "interfaces": [],
-    "power": { "input_voltage_range": [5.5, 36], "recommended_voltage": 12, "can_source_power": true, "output_capability_ma": 3000, "has_onboard_regulator": true },
-    "usage_notes": ["输出给 K230 等大电流负载时，反馈电阻按需调压并留 20% 裕量", "输入电容离芯片近，否则电机同源时纹波大"],
+    "power": {
+      "input_voltage_range": [
+        5.5,
+        36
+      ],
+      "recommended_voltage": 12,
+      "can_source_power": true,
+      "output_capability_ma": 3000,
+      "has_onboard_regulator": true
+    },
+    "usage_notes": [
+      "输出给 K230 等大电流负载时，反馈电阻按需调压并留 20% 裕量",
+      "输入电容离芯片近，否则电机同源时纹波大"
+    ],
     "certification_status": "BENCHMARKED",
-    "source_snapshot": { "source": "lab", "uploader": "实验室示例", "school": "示例大学" },
+    "source_snapshot": {
+      "source": "lab",
+      "uploader": "实验室示例",
+      "school": "示例大学"
+    },
     "price": 12,
-    "tags": ["电源", "Buck"]
+    "tags": [
+      "电源",
+      "Buck"
+    ]
   },
   {
     "id": "wireless-nrf24l01",
@@ -108,14 +358,357 @@
     "main_chip": "nRF24L01+",
     "description": "2.4GHz SPI 无线收发，双机通信/遥控常用。",
     "interfaces": [
-      { "name": "SPI", "interface_type": "SPI", "role": "device", "voltage_level": 3.3, "five_v_tolerant": false, "pins": [{ "signal": "MOSI", "pin": "MOSI" }, { "signal": "MISO", "pin": "MISO" }, { "signal": "SCK", "pin": "SCK" }, { "signal": "CSN", "pin": "CSN" }, { "signal": "CE", "pin": "CE" }], "constraints": ["not_5v_tolerant", "SPI ≤ 10MHz"] }
+      {
+        "name": "SPI",
+        "interface_type": "SPI",
+        "role": "device",
+        "voltage_level": 3.3,
+        "five_v_tolerant": false,
+        "pins": [
+          {
+            "signal": "MOSI",
+            "pin": "MOSI"
+          },
+          {
+            "signal": "MISO",
+            "pin": "MISO"
+          },
+          {
+            "signal": "SCK",
+            "pin": "SCK"
+          },
+          {
+            "signal": "CSN",
+            "pin": "CSN"
+          },
+          {
+            "signal": "CE",
+            "pin": "CE"
+          }
+        ],
+        "constraints": [
+          "not_5v_tolerant",
+          "SPI ≤ 10MHz"
+        ]
+      }
     ],
-    "power": { "input_voltage_range": [1.9, 3.6], "typical_current_ma": 14, "peak_current_ma": 115 },
-    "usage_notes": ["电源脚并 10uF+0.1uF，否则丢包", "IRQ 可不接但建议接，轮询浪费时间片"],
-    "known_issues": ["山寨片与原厂片混发，通信距离差异大，赛前拉距离测试"],
+    "power": {
+      "input_voltage_range": [
+        1.9,
+        3.6
+      ],
+      "typical_current_ma": 14,
+      "peak_current_ma": 115
+    },
+    "usage_notes": [
+      "电源脚并 10uF+0.1uF，否则丢包",
+      "IRQ 可不接但建议接，轮询浪费时间片"
+    ],
+    "known_issues": [
+      "山寨片与原厂片混发，通信距离差异大，赛前拉距离测试"
+    ],
     "certification_status": "FUNCTION_TESTED",
-    "source_snapshot": { "source": "taobao" },
+    "source_snapshot": {
+      "source": "taobao"
+    },
     "price": 5,
-    "tags": ["无线", "2.4G"]
+    "tags": [
+      "无线",
+      "2.4G"
+    ]
+  },
+  {
+    "id": "dds-ad9833",
+    "name": "AD9833 DDS 信号发生模块",
+    "category": "signal.dds",
+    "version": "1.0.0",
+    "main_chip": "AD9833",
+    "description": "0~12.5MHz 正弦/三角/方波可编程输出，SPI 控制，信号类题目标配信号源。",
+    "interfaces": [
+      {
+        "name": "SPI",
+        "interface_type": "SPI",
+        "role": "device",
+        "voltage_level": 3.3,
+        "five_v_tolerant": false,
+        "pins": [
+          {
+            "signal": "SDATA",
+            "pin": "SDATA"
+          },
+          {
+            "signal": "SCLK",
+            "pin": "SCLK"
+          },
+          {
+            "signal": "FSYNC",
+            "pin": "FSYNC"
+          }
+        ],
+        "constraints": [
+          "写频率字需先写控制字 B28=1",
+          "输出幅度约 0.6Vpp，需后级放大"
+        ]
+      },
+      {
+        "name": "OUT",
+        "interface_type": "DAC",
+        "role": "host",
+        "voltage_level": 0.6,
+        "pins": [
+          {
+            "signal": "VOUT",
+            "pin": "OUT"
+          }
+        ]
+      }
+    ],
+    "power": {
+      "input_voltage_range": [
+        2.3,
+        5.5
+      ],
+      "typical_current_ma": 5
+    },
+    "usage_notes": [
+      "25MHz 有源晶振版本频率分辨率 0.1Hz",
+      "方波模式输出为 VDD 电平"
+    ],
+    "known_issues": [
+      "输出含镜像频率分量，>1MHz 使用建议加 LC 低通"
+    ],
+    "compatibility": [
+      "dds-ad9959"
+    ],
+    "certification_status": "COMPETITION_READY",
+    "source_snapshot": {
+      "source": "taobao"
+    },
+    "price": 15,
+    "tags": [
+      "DDS",
+      "信号源",
+      "频率合成"
+    ],
+    "competition_cases": [
+      {
+        "year": 2023,
+        "problem": "A题",
+        "note": "信号发生器激励源"
+      }
+    ]
+  },
+  {
+    "id": "vga-ad8336",
+    "name": "AD8336 可变增益放大器模块",
+    "category": "signal.vga",
+    "version": "1.0.0",
+    "main_chip": "AD8336",
+    "description": "0~60dB 连续可调增益，带宽 100MHz，配合 DAC 电压控制可实现自动增益(AGC)。",
+    "interfaces": [
+      {
+        "name": "GAIN_CTRL",
+        "interface_type": "ADC",
+        "role": "device",
+        "voltage_level": 1.5,
+        "pins": [
+          {
+            "signal": "VGAIN",
+            "pin": "GAIN"
+          }
+        ],
+        "constraints": [
+          "增益斜率约 50dB/V"
+        ]
+      },
+      {
+        "name": "IN/OUT",
+        "interface_type": "ADC",
+        "role": "either",
+        "voltage_level": 2.5,
+        "pins": [
+          {
+            "signal": "VIN",
+            "pin": "IN"
+          },
+          {
+            "signal": "VOUT",
+            "pin": "OUT"
+          }
+        ]
+      }
+    ],
+    "power": {
+      "input_voltage_range": [
+        3,
+        12
+      ],
+      "typical_current_ma": 25
+    },
+    "usage_notes": [
+      "双电源 ±5V 供电动态范围最佳",
+      "增益控制脚建议 RC 滤波防振荡"
+    ],
+    "known_issues": [
+      "高增益下布线不当易自激，输入输出务必分区"
+    ],
+    "compatibility": [],
+    "certification_status": "FUNCTION_TESTED",
+    "source_snapshot": {
+      "source": "lab"
+    },
+    "price": 45,
+    "tags": [
+      "VGA",
+      "AGC",
+      "程控增益"
+    ],
+    "competition_cases": [
+      {
+        "year": 2021,
+        "problem": "A题",
+        "note": "自动增益幅度调理"
+      }
+    ]
+  },
+  {
+    "id": "adc-ads1256",
+    "name": "ADS1256 高精度 ADC 模块",
+    "category": "adc.precision",
+    "version": "1.0.0",
+    "main_chip": "ADS1256",
+    "description": "24bit / 30ksps 低噪声 ΣΔ ADC，8 通道复用，SPI 接口，测量类题目高精度采集首选。",
+    "interfaces": [
+      {
+        "name": "SPI",
+        "interface_type": "SPI",
+        "role": "device",
+        "voltage_level": 3.3,
+        "five_v_tolerant": false,
+        "max_baudrate": 1920000,
+        "pins": [
+          {
+            "signal": "DIN",
+            "pin": "DIN"
+          },
+          {
+            "signal": "DOUT",
+            "pin": "DOUT"
+          },
+          {
+            "signal": "SCLK",
+            "pin": "SCLK"
+          },
+          {
+            "signal": "CS",
+            "pin": "CS"
+          },
+          {
+            "signal": "DRDY",
+            "pin": "DRDY"
+          }
+        ],
+        "constraints": [
+          "SCLK ≤ CLKIN/4，7.68M 晶振时约 1.92MHz",
+          "读数据前必须等 DRDY 拉低"
+        ]
+      }
+    ],
+    "power": {
+      "input_voltage_range": [
+        4.75,
+        5.25
+      ],
+      "typical_current_ma": 8
+    },
+    "usage_notes": [
+      "基准建议外接 2.5V 高精度基准提升有效位数",
+      "PGA 最大 64 倍，小信号先查噪声表"
+    ],
+    "known_issues": [
+      "模拟电源纹波直接进有效位，务必 LDO 独立供电"
+    ],
+    "compatibility": [
+      "adc-ad7606"
+    ],
+    "certification_status": "BENCHMARKED",
+    "source_snapshot": {
+      "source": "taobao"
+    },
+    "price": 55,
+    "tags": [
+      "24bit",
+      "高精度",
+      "低噪声"
+    ],
+    "competition_cases": [
+      {
+        "year": 2024,
+        "problem": "B题",
+        "note": "磁参数高精度采集"
+      }
+    ]
+  },
+  {
+    "id": "opamp-opa2277",
+    "name": "OPA2277 精密运放模块",
+    "category": "signal.opamp",
+    "version": "1.0.0",
+    "main_chip": "OPA2277",
+    "description": "10μV 失调精密双运放，前级调理/有源滤波/基准缓冲通用件。",
+    "interfaces": [
+      {
+        "name": "IN/OUT",
+        "interface_type": "ADC",
+        "role": "either",
+        "voltage_level": 5,
+        "pins": [
+          {
+            "signal": "IN+",
+            "pin": "3"
+          },
+          {
+            "signal": "IN-",
+            "pin": "2"
+          },
+          {
+            "signal": "OUT",
+            "pin": "1"
+          }
+        ]
+      }
+    ],
+    "power": {
+      "input_voltage_range": [
+        4,
+        36
+      ],
+      "typical_current_ma": 2
+    },
+    "usage_notes": [
+      "带宽 1MHz，高频场合换 OPA2350/THS 系列",
+      "单电源使用注意输入共模范围不含轨"
+    ],
+    "known_issues": [],
+    "compatibility": [
+      "opamp-opa2350"
+    ],
+    "certification_status": "COMPETITION_READY",
+    "source_snapshot": {
+      "source": "lab"
+    },
+    "price": 9,
+    "tags": [
+      "精密",
+      "低失调",
+      "前级调理"
+    ],
+    "competition_cases": [
+      {
+        "year": 2023,
+        "problem": "通用",
+        "note": "模拟前端调理"
+      }
+    ]
   }
 ]

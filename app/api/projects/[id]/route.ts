@@ -26,7 +26,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     return NextResponse.json({ error: `非法阶段，可选：${PROJECT_STAGES.join(" → ")}` }, { status: 400 });
   }
   await db().execute({
-    sql: "UPDATE projects SET stage=COALESCE(?, stage), name=COALESCE(?, name), problem_text=COALESCE(?, problem_text), updated_at=datetime('now') WHERE project_id=?",
+    sql: "UPDATE projects SET stage=COALESCE(?, stage), name=COALESCE(?, name), problem_text=COALESCE(?, problem_text), updated_at=now() WHERE project_id=?",
     args: [body.stage || null, body.name || null, body.problem_text || null, params.id],
   });
   return NextResponse.json({ ok: true });
