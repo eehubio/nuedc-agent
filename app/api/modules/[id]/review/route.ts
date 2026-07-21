@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { audit } from "@/lib/module-query";
 import { db, ensureSchema, uid } from "@/lib/db";
 import { resolveTier, canReviewModules } from "@/lib/auth";
 import { MODULE_CERT_STATES } from "@/lib/types";
@@ -37,5 +38,6 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     sql: "INSERT INTO module_reviews (review_id, module_id, reviewer, from_status, to_status, result, issues) VALUES (?, ?, ?, ?, ?, ?, ?)",
     args: [uid("REV"), params.id, tier, from, to, body.result || "approved", JSON.stringify(body.issues || [])],
   });
+  await audit(`review:${String(body.result)}→${to}`, params.id, tier);
   return NextResponse.json({ from_status: from, to_status: to });
 }

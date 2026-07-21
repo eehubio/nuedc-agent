@@ -114,51 +114,6 @@ export function HomePage({ ctx }: { ctx: any }) {
   );
 }
 
-/* ================= 题目预测 ================= */
-export function ForecastPage({ ctx }: { ctx: any }) {
-  const [devices, setDevices] = useState("MSPM0G3507\nK230 视觉模块\nTB6612 电机驱动\n磁环\n功率 MOS");
-  const [err, setErr] = useState("");
-  const f = ctx.forecast;
-  const maxScore = f?.predictions?.[0]?.score || 1;
-  return (
-    <div className="grid" style={{ gridTemplateColumns: "320px 1fr", alignItems: "start" }}>
-      <div className="card">
-        <h3>本年度器件清单</h3>
-        <p className="hint">粘贴组委会公布的器件与仪器清单（每行一项）。预测采用「历年周期 + 器件命中 + 新增器件 + 可测试性」规则评分，排序供备赛资源分配参考。</p>
-        <textarea className="area" value={devices} onChange={(e) => setDevices(e.target.value)} rows={8} />
-        <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-          <button className="btn" disabled={ctx.busy} onClick={async () => {
-            setErr("");
-            const r = await ctx.runForecast(devices);
-            if (!r.ok) setErr(r.message || "预测失败");
-          }}>{ctx.busy ? "评分中…" : "运行方向预测"}</button>
-        </div>
-        {err && <p className="issue blocker" style={{ marginTop: 10 }}>{err}</p>}
-      </div>
-
-      <div className="card">
-        <h3>{new Date().getFullYear()} 电赛题目方向热度</h3>
-        {!f && <p className="hint">运行预测后，这里显示各方向的相对热度排行、分档与评分依据。</p>}
-        {f?.predictions?.map((p: any, i: number) => (
-          <div key={p.direction}>
-            <div className={"rankrow" + (i < 2 ? " hot" : "")}>
-              <span className={"no" + (i < 3 ? " top" : "")}>{i + 1}</span>
-              <span>{p.direction}</span>
-              <div className="heatbar"><i style={{ width: `${Math.max(6, (p.score / maxScore) * 100)}%` }} /></div>
-              <span className={"band b" + ["高可能", "中高可能", "中等可能"].indexOf(p.band).toString().replace("-1", "3")}>{p.band}</span>
-            </div>
-            {p.evidence?.length > 0 && <p className="evi">依据：{p.evidence.join("；")}</p>}
-          </div>
-        ))}
-        {f?.commentary && (
-          <div className="issue info" style={{ marginTop: 12, display: "block", whiteSpace: "pre-wrap" }}>{f.commentary}</div>
-        )}
-        {f && <p className="hint" style={{ marginTop: 10 }}>⚠ {f.disclaimer}</p>}
-      </div>
-    </div>
-  );
-}
-
 /* ================= 模块选型 ================= */
 export function ModulesPage({ ctx }: { ctx: any }) {
   const [q, setQ] = useState("");
@@ -221,7 +176,8 @@ export function ModulesPage({ ctx }: { ctx: any }) {
       {detail && (
         <div className="modal-mask" onClick={() => setDetail(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0 }}>{detail.name} <CertBadge s={detail.certification_status} /></h3>
+            <h3 style={{ marginTop: 0 }}>{detail.name} <CertBadge s={detail.certification_status} />
+              {detail._completeness != null && <span className="chip">数据完整度 {detail._completeness}%</span>}</h3>
             <p className="hint">{detail.description}</p>
             <h4>接口定义</h4>
             <table className="data"><thead><tr><th>接口</th><th>类型</th><th>电平</th><th>约束</th></tr></thead>

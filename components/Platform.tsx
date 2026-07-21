@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { callAgent, api, getEmbedParams, emitToEzplm } from "./api";
-import { HomePage, ForecastPage, ModulesPage, ProjectsPage } from "./pages-core";
+import { HomePage, ModulesPage, ProjectsPage } from "./pages-core";
 import { SolutionPage, WiringPage, CodePage, DebugPage, ReportPage } from "./pages-build";
 
 export const STAGES = [
@@ -16,7 +16,6 @@ export const STAGE_LABEL: Record<string, string> = {
 
 const NAV = [
   { key: "home",     label: "首页",     icon: "🏠" },
-  { key: "forecast", label: "题目预测", icon: "📊" },
   { key: "solution", label: "方案生成", icon: "🧠" },
   { key: "modules",  label: "模块选型", icon: "🔲" },
   { key: "wiring",   label: "电路连线", icon: "🔌" },
@@ -31,7 +30,7 @@ const NAV_SOON = [
 ];
 export type PageKey = (typeof NAV)[number]["key"];
 const PAGE_TITLE: Record<PageKey, string> = {
-  home: "首页", forecast: "题目预测", solution: "方案生成", modules: "模块选型",
+  home: "首页", solution: "方案生成", modules: "模块选型",
   wiring: "电路连线与接口检查", code: "代码生成", debug: "调试助手（LabSight）",
   report: "报告生成", projects: "我的项目",
 };
@@ -52,7 +51,6 @@ export default function Platform({ embed }: { embed: boolean }) {
   // 项目内产物（跨页共享）
   const [problemText, setProblemText] = useState("");
   const [requirements, setRequirements] = useState<any>(null);
-  const [forecast, setForecast] = useState<any>(null);
   const [solutions, setSolutions] = useState<any>(null);
   const [chosenSolution, setChosenSolution] = useState<any>(null);
   const [wiringReport, setWiringReport] = useState<any>(null);
@@ -153,15 +151,6 @@ export default function Platform({ embed }: { embed: boolean }) {
       await advanceStage("REQUIREMENTS_PARSED", pid);
       emitToEzplm("requirements_ready", r.output);
     } else say("agent", "解析失败：" + (r.message || ""));
-  }
-
-  async function runForecast(deviceListText: string) {
-    setBusy(true);
-    const device_list = deviceListText.split(/[\n,，、;；]/).map((s) => s.trim()).filter(Boolean);
-    const r = await callAgent("topic_forecast", { device_list }, projectId);
-    setBusy(false);
-    if (r.ok) setForecast(r.output);
-    return r;
   }
 
   async function runSolution() {
@@ -284,9 +273,9 @@ export default function Platform({ embed }: { embed: boolean }) {
   const stageIdx = STAGES.indexOf(stage as any);
   const ctx = {
     params, busy, stage, stageIdx, projectId, projects, setProjectId, resetProject,
-    problemText, setProblemText, requirements, forecast, solutions, chosenSolution,
+    problemText, setProblemText, requirements, solutions, chosenSolution,
     wiringReport, bom, codeBundle, debugSession, report, modules, shortlist, setShortlist,
-    msgs, chat, runInterpret, runForecast, runSolution, approveSolution, runWiringCheck,
+    msgs, chat, runInterpret, runSolution, approveSolution, runWiringCheck,
     runBomFromSolution, runBomFromText, runCode, runDebug, runReport, startFromDirection,
     setPage, advanceStage,
   };
@@ -310,7 +299,7 @@ export default function Platform({ embed }: { embed: boolean }) {
         ))}
         <div className="promo">
           <b>2026 电赛备战</b>
-          <p>预测 + 方案 + 代码 + 报告<br />一站式备赛</p>
+          <p>方案 + 代码 + 调试 + 报告<br />一站式备赛</p>
           <div className="stage-mini" title={`当前阶段：${STAGE_LABEL[stage]}`}>
             {STAGES.map((s, i) => <i key={s} className={i <= stageIdx ? "on" : ""} />)}
           </div>
@@ -331,7 +320,6 @@ export default function Platform({ embed }: { embed: boolean }) {
 
         <div className="page">
           {page === "home" && <HomePage ctx={ctx} />}
-          {page === "forecast" && <ForecastPage ctx={ctx} />}
           {page === "solution" && <SolutionPage ctx={ctx} />}
           {page === "modules" && <ModulesPage ctx={ctx} />}
           {page === "wiring" && <WiringPage ctx={ctx} />}

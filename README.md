@@ -2,7 +2,7 @@
 
 > **1 个总控编排器 + 专业 Agent + 规则引擎 + 结构化模块数据库**，可嵌入 ezPLM，也可独立部署到 Vercel。
 
-覆盖需求：物料清单整理 · 题目预测 · 模块数据库（淘宝/实验室/官方，上传审批）· 原理图/接口/图片/代码仓库 · 自动构建方案 · 代码生成 · 调试助手（LabSight）· 报告生成。
+覆盖需求：物料清单整理 · 模块数据库（淘宝/实验室/官方，上传审批）· 原理图/接口/图片/代码仓库 · 自动构建方案 · 代码生成 · 调试助手（LabSight）· 报告生成。
 
 技术栈与 [eehubio/ai-hardware-genesis-platform](https://github.com/eehubio/ai-hardware-genesis-platform) 保持一致（Next.js 14 + Neon Postgres + zod），模块 schema 兼容其枚举体系，两库数据可互导；方案生成流程参考 [eehubio/ai-hardware-genesis](https://github.com/eehubio/ai-hardware-genesis) 的渐进式需求确认与组件推荐模式。
 
@@ -119,6 +119,25 @@ curl -X POST /api/agent -d '{"agent":"labsight_debug","input":{"symptom":"电机
 ## 前端交互（面向参赛学生）
 
 方案生成页采用 **对话式渐进流程**（参考 ai-hardware-genesis 的操作逻辑）：粘贴赛题 → 助手解析为可核对的指标清单并标出歧义 → 人工确认 → 生成两套取舍不同的候选方案，每套附 **自动布局的 SVG 方案框图**（连线按接口预检结果着色）与优劣对比 → 人工采用一套后解锁 BOM / 连线检查 / 代码 / 报告。首页的「典型应用方向」卡片可一键带示例需求进入该流程；「模块选型」页选用的模块会在方案生成时被优先考虑。
+
+## 模块数据库（对齐 ai-hardware-genesis-platform）
+
+**数据在哪**：Neon Postgres 的 `modules` 表。每行的 `data` 列存整个模块的 JSON（`lib/module-schema.ts` 定义的 zod schema：接口电平/引脚/约束、电源参数、使用要点、坑点、历届应用、淘宝快照、原理图与代码资产），`certification_status` / `category` / `source_type` 等冗余列用于快速筛选。`module_reviews` 表记录每次审核，`events` 表记录写操作审计。
+
+**怎么调用**（三个消费方）：
+1. 前端「模块选型」页 → `GET /api/modules`，付费字段按用户分级自动剥离；
+2. 方案/推荐 Agent → `loadModuleIndex()` 读库并注入 LLM 上下文（幻觉 id 会被丢弃）；
+3. 规则引擎 → 接口检查直接读模块的 `interfaces`/`power` 做电平与电源预算判定。
+
+**能力查询**（普通搜索答不了的问题，参数对齐 genesis-platform 的 `/api/v1/modules/query`）：
+```
+GET /api/modules?interface=SPI&vAtMost=3.3&tolerant5v=false   哪些 3.3V SPI 模块不耐 5V（需电平转换）
+GET /api/modules?minPeak=500                                  峰值电流 ≥500mA 的大负载（电源预算用）
+GET /api/modules?chip=AD98&minCompleteness=70                 按主芯片 + 数据完整度筛
+```
+每个返回的模块带 `_completeness`（0~100 透明加权完整度评分，权重见 `lib/module-query.ts`）。
+
+**怎么维护**：打开 **`/admin` 编辑后台**（输入 `ADMIN_API_KEY` 登录），包含：治理总览（模块总数/平均完整度/来源分布）、**待审核工作流**（用户与实验室上传的模块强制进 DRAFT，点「通过」沿认证状态机 DRAFT→DOCUMENTED→…→COMPETITION_READY 逐级晋级，「驳回」退回）、**低完整度名单**（明确列出每个模块缺什么字段）、模块 JSON 在线编辑、新增模块、全量导出 JSON。批量导入用 `data/seed-modules.json` + `npm run db:seed`（upsert 语义，可反复执行）。
 
 ## 权限体系
 

@@ -43,7 +43,7 @@ export const TYPICAL_DIRECTIONS = [
 
 /** 首页功能入口卡（导航到对应页面） */
 export const FEATURES: { key: string; name: string; desc: string; icon: string; color: string }[] = [
-  { key: "forecast", name: "题目预测", desc: "AI 预测题目方向与考点", icon: "📊", color: "#f59e0b" },
+  { key: "report", name: "报告生成", desc: "按电赛规范一键成稿", icon: "📄", color: "#f59e0b" },
   { key: "solution", name: "方案生成", desc: "根据需求生成完整方案", icon: "🧠", color: "#22c55e" },
   { key: "modules", name: "模块选型", desc: "智能推荐器件与模块", icon: "🔲", color: "#3b82f6" },
   { key: "code", name: "代码生成", desc: "一键生成算法与驱动", icon: "⌨️", color: "#7c3aed" },

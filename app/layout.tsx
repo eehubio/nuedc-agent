@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "NUEDC Agent · 电赛智能体",
-  description: "赛题理解 / 题目预测 / 模块数据库 / 方案生成 / 代码生成 / LabSight 调试 / 报告生成",
+  description: "赛题理解 / 模块数据库 / 方案生成 / 代码生成 / LabSight 调试 / 报告生成",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

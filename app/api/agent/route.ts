@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
   // 免费用户限制：代码生成 / 报告生成 / 调试属付费能力
   const paidAgents: AgentType[] = ["code_generator", "report_composer", "labsight_debug"];
   if (tier === "free" && paidAgents.includes(agent)) {
-    return NextResponse.json({ error: "该能力需要付费账户。免费账户可用：赛题分析、题目预测、模块浏览、方案建议。" }, { status: 402 });
+    return NextResponse.json({ error: "该能力需要付费账户。免费账户可用：赛题分析、模块浏览、方案建议。" }, { status: 402 });
   }
 
   // 读取项目阶段（用于状态门禁）

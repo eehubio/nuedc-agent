@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { audit } from "@/lib/module-query";
 import { db, ensureSchema } from "@/lib/db";
 import { moduleUpdateSchema, zodMessage } from "@/lib/module-schema";
 import { resolveTier, canDownloadAssets, canReviewModules, stripPaidFields } from "@/lib/auth";
@@ -18,6 +19,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   if (unlocked) {
     await db().execute({ sql: "UPDATE modules SET downloads = downloads + 1 WHERE id=?", args: [params.id] });
   }
+  await audit("edit", params.id, tier);
   return NextResponse.json({ module: unlocked ? data : stripPaidFields(data), tier });
 }
 
