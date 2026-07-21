@@ -43,11 +43,11 @@ export const TYPICAL_DIRECTIONS = [
 
 /** 首页功能入口卡（导航到对应页面） */
 export const FEATURES: { key: string; name: string; desc: string; icon: string; color: string }[] = [
-  { key: "report", name: "报告生成", desc: "按电赛规范一键成稿", icon: "📄", color: "#f59e0b" },
   { key: "solution", name: "方案生成", desc: "根据需求生成完整方案", icon: "🧠", color: "#22c55e" },
   { key: "modules", name: "模块选型", desc: "智能推荐器件与模块", icon: "🔲", color: "#3b82f6" },
   { key: "code", name: "代码生成", desc: "一键生成算法与驱动", icon: "⌨️", color: "#7c3aed" },
   { key: "debug", name: "调试助手", desc: "故障定位与测量指引", icon: "🔬", color: "#0ea5e9" },
+  { key: "report", name: "报告生成", desc: "按电赛规范一键成稿", icon: "📄", color: "#f59e0b" },
 ];
 
 export const CATEGORY_FILTERS: { key: string; label: string }[] = [

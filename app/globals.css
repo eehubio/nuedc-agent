@@ -144,11 +144,14 @@ input, textarea, select { font: inherit; color: var(--ink); }
 .hero h2 { font-size: 30px; margin: 8px 0 14px; }
 .hero .feats { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; }
 .hero .feats span::before { content: "✓ "; color: #6ee7a8; font-weight: 700; }
-.hero .chiptags { position: absolute; right: 30px; top: 24px; display: grid; gap: 8px; }
+.hero .chiptags {
+  position: absolute; right: 30px; top: 50%; transform: translateY(-50%);
+  display: grid; gap: 7px; justify-items: end;
+}
 .hero .chiptags i {
   font-style: normal; font-size: 12px; background: rgba(255,255,255,.14);
   border: 1px solid rgba(255,255,255,.25); border-radius: 99px; padding: 3px 12px;
-  backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px); white-space: nowrap;
 }
 @media (max-width: 900px) { .hero .chiptags { display: none; } }
 
