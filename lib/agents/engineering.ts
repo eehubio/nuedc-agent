@@ -12,6 +12,13 @@ registerAgent("solution_architect", async (input) => {
   const catalog = moduleCatalogForLlm(index);
   const requirements = input.requirements;
   if (!requirements) return { ok: false, output: null, message: "缺少 requirements（先运行赛题理解 Agent）" };
+  // 需求确认门禁：所有必须项需人工确认（REJECTED 视为删除）；input.force=true 可越过（原型探索用）
+  const reqList = (requirements.requirements || []) as { priority?: string; status?: string; id: string }[];
+  const unconfirmed = reqList.filter((r) => r.priority === "mandatory" && r.status !== "CONFIRMED" && r.status !== "REJECTED");
+  if (unconfirmed.length && !input.force) {
+    return { ok: false, output: null, message: `尚有 ${unconfirmed.length} 条基本要求未确认（${unconfirmed.slice(0, 5).map((r) => r.id).join("、")}…）。请在需求清单中逐条确认后再生成正式方案。` };
+  }
+  requirements.requirements = reqList.filter((r) => r.status !== "REJECTED");
 
   const out = await llmJson<{ candidate_solutions: SolutionProposal[]; recommended_solution: string; rationale: string }>({
     system: `你是电赛系统方案架构师。基于结构化需求生成 2 套候选方案（SOL-A / SOL-B），要求：

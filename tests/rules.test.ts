@@ -1,0 +1,147 @@
+import { describe, it, expect } from "vitest";
+import { checkIntegration } from "../lib/rules/integration-rules";
+import { judge, computeScore } from "../lib/rules/test-scoring";
+import { stripPaidFields, canDownloadAssets } from "../lib/auth";
+import { scoreCompleteness } from "../lib/module-query";
+import { makeAdminToken, verifyAdminToken } from "../lib/admin-session";
+import type { Requirement } from "../lib/types";
+
+/* ---------- 夹具 ---------- */
+const modIndex: Record<string, any> = {
+  "mcu-a": {
+    id: "mcu-a", name: "主控A",
+    interfaces: [{ name: "UART0", interface_type: "UART", voltage_level: 3.3, five_v_tolerant: false, pins: [{ signal: "RX", pin: "PA10" }] }],
+    power: { typical_current_ma: 100 },
+  },
+  "drv-t": {
+    id: "drv-t", name: "驱动T",
+    interfaces: [{ name: "PWMA", interface_type: "PWM", voltage_level: 3.3, five_v_tolerant: true, pins: [] }],
+    power: { typical_current_ma: 50 },
+  },
+  "cam-x": { id: "cam-x", name: "视觉X", interfaces: [], power: { peak_current_ma: 900 } },
+};
+const baseSol = (over: any = {}) => ({
+  solution_id: "S", name: "t", summary: "", advantages: [], disadvantages: [],
+  risk_level: "low", implementation_hours: 1, uncovered_requirements: [],
+  blocks: [
+    { block_id: "B1", name: "主控", module_id: "mcu-a", role: "mcu", covers_requirements: [] },
+    { block_id: "B2", name: "驱动", module_id: "drv-t", role: "motor", covers_requirements: [] },
+    { block_id: "B3", name: "视觉", module_id: "cam-x", role: "vision", covers_requirements: [] },
+  ],
+  connections: [], power_tree: [], ...over,
+});
+
+describe("接口规则引擎", () => {
+  it("5V 打非容忍 3.3V 输入 → blocker", () => {
+    const r = checkIntegration(baseSol({
+      connections: [{ from: "X.OUT", to: "MCU-A.UART0_RX", protocol: "UART", voltage_from: 5, voltage_to: 3.3 }],
+    }) as any, modIndex);
+    expect(r.passed).toBe(false);
+    expect(r.issues.some((i) => i.rule === "LEVEL_5V_INTO_3V3" && i.severity === "blocker")).toBe(true);
+  });
+
+  it("5V 打已标注 5V 容忍的输入 → 仅 warning 不阻断", () => {
+    const r = checkIntegration(baseSol({
+      connections: [{ from: "MCU.PWM", to: "DRV-T.PWMA", protocol: "PWM", voltage_from: 5, voltage_to: 3.3 }],
+      blocks: [{ block_id: "B2", name: "驱动", module_id: "drv-t", role: "motor", covers_requirements: [] }],
+    }) as any, modIndex);
+    expect(r.issues.some((i) => i.severity === "blocker" && i.rule.startsWith("LEVEL"))).toBe(false);
+  });
+
+  it("电源预算超支 → blocker，并给出各负载明细", () => {
+    const r = checkIntegration(baseSol({
+      power_tree: [{ rail: "5V", voltage: 5, source: "DCDC", loads: ["B1", "B3"], budget_ma: 500 }],
+    }) as any, modIndex);
+    const hit = r.issues.find((i) => i.rule === "POWER_BUDGET_EXCEEDED");
+    expect(hit?.severity).toBe("blocker");
+    expect(hit?.message).toContain("1000");
+  });
+
+  it("I2C/SDA 总线端点豁免；普通引脚被两条连接占用 → 冲突", () => {
+    const r = checkIntegration(baseSol({
+      connections: [
+        { from: "SENSOR1.SDA", to: "MCU.SDA", protocol: "I2C", voltage_from: 3.3, voltage_to: 3.3 },
+        { from: "SENSOR2.SDA", to: "MCU.SDA", protocol: "I2C", voltage_from: 3.3, voltage_to: 3.3 },
+        { from: "ENC.A", to: "MCU.PC1", protocol: "GPIO", voltage_from: 3.3, voltage_to: 3.3 },
+        { from: "KEY.OUT", to: "MCU.PC1", protocol: "GPIO", voltage_from: 3.3, voltage_to: 3.3 },
+      ],
+    }) as any, modIndex);
+    const pinIssues = r.issues.filter((i) => i.rule === "PIN_CONFLICT");
+    expect(pinIssues.some((i) => i.where.includes("SDA"))).toBe(false);  // 总线豁免
+    expect(pinIssues.some((i) => i.where.includes("PC1"))).toBe(true);   // 普通引脚冲突
+  });
+});
+
+describe("测试评分规则", () => {
+  const req = (over: Partial<Requirement> = {}): Requirement => ({
+    id: "REQ-001", type: "performance", description: "输出幅度",
+    target: 2, unit: "Vpp", tolerance: "±1%", priority: "mandatory",
+    source: "基本要求(1)", verification_method: "measurement", status: "CONFIRMED", ...over,
+  });
+
+  it("±1% 容差内通过、超出不通过", () => {
+    expect(judge(req(), { requirement_id: "REQ-001", measured_value: 2.01 }).passed).toBe(true);
+    expect(judge(req(), { requirement_id: "REQ-001", measured_value: 2.1 }).passed).toBe(false);
+  });
+  it("≤ 型判据按上限判定", () => {
+    const r = req({ tolerance: "≤5", target: undefined });
+    expect(judge(r, { requirement_id: "REQ-001", measured_value: 4 }).passed).toBe(true);
+    expect(judge(r, { requirement_id: "REQ-001", measured_value: 6 }).passed).toBe(false);
+  });
+  it("人工判定覆盖自动判定；未测返回 null", () => {
+    expect(judge(req(), { requirement_id: "REQ-001", measured_value: 99, pass_override: true }).passed).toBe(true);
+    expect(judge(req(), undefined).passed).toBe(null);
+  });
+  it("得分汇总：未通过的基本要求进入 blockers，未测项拉开高低区间", () => {
+    const reqs = [req(), req({ id: "REQ-002" }), req({ id: "REQ-003", priority: "bonus" })];
+    const { summary } = computeScore(reqs, [
+      { requirement_id: "REQ-001", measured_value: 2 },      // pass
+      { requirement_id: "REQ-002", measured_value: 3 },      // fail
+    ]);
+    expect(summary.mandatory_passed).toBe(1);
+    expect(summary.blockers).toHaveLength(1);
+    expect(summary.score_high).toBeGreaterThan(summary.score_low);
+  });
+});
+
+describe("付费门控", () => {
+  const mod = { id: "m", schematic_assets: ["a.pdf"], pcb_assets: ["b"], code_repositories: ["c"], name: "x" };
+  it("免费用户剥离付费字段并标记锁定", () => {
+    const out: any = stripPaidFields(mod as any);
+    expect(out.schematic_assets).toEqual([]);      // 置空而非删键，前端可安全遍历
+    expect(out.code_repositories).toEqual([]);
+    expect(out.assets_locked).toBe(true);
+  });
+  it("付费用户仅可下载 FUNCTION_TESTED 及以上；实验室不受限", () => {
+    expect(canDownloadAssets("paid", "DOCUMENTED")).toBe(false);
+    expect(canDownloadAssets("paid", "FUNCTION_TESTED")).toBe(true);
+    expect(canDownloadAssets("lab", "DRAFT")).toBe(true);
+    expect(canDownloadAssets("free", "COMPETITION_READY")).toBe(false);
+  });
+});
+
+describe("完整度评分", () => {
+  it("补充字段单调不减，空模块低分", () => {
+    const empty = scoreCompleteness({ id: "x" });
+    const rich = scoreCompleteness({
+      id: "x", name: "n", category: "c", main_chip: "chip", description: "很长的描述文本", price: 10,
+      tags: ["a"], interfaces: [{ pins: [{ signal: "s", pin: "1" }], constraints: ["c"] }],
+      power: { input_voltage_range: [3, 5], typical_current_ma: 10, peak_current_ma: 20 },
+      usage_notes: ["u"], known_issues: ["k"], competition_cases: [{ year: 2024, problem: "A" }],
+      compatibility: ["y"], source_snapshot: { source: "lab" }, schematic_assets: ["s"], code_repositories: ["r"],
+    });
+    expect(empty.score).toBeLessThan(30);
+    expect(rich.score).toBeGreaterThan(90);
+    expect(rich.score).toBeGreaterThan(empty.score);
+  });
+});
+
+describe("管理会话令牌", () => {
+  it("正确密钥签发的令牌可验证；篡改与错密钥拒绝", () => {
+    const t = makeAdminToken("secret-1");
+    expect(verifyAdminToken(t, "secret-1")).toBe(true);
+    expect(verifyAdminToken(t, "secret-2")).toBe(false);
+    expect(verifyAdminToken(t.slice(0, -2) + "xx", "secret-1")).toBe(false);
+    expect(verifyAdminToken(undefined, "secret-1")).toBe(false);
+  });
+});

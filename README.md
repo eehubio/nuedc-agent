@@ -180,5 +180,5 @@ data/seed-modules.json    10 个种子模块（MSPM0/K230/TB6612/MPU6050/TPS5430
 ## 路线图（对应设计文档分期）
 
 - **一期（本仓库已实现）**：总控编排、赛题理解、题目预测、模块知识库、方案生成（含接口预检）、接口检查、BOM 整理、备料规划、代码生成（模块级）、调试助手、报告生成、模块上传审批、付费门控、ezPLM 嵌入
-- **二期**：代码验证 Agent（接 GCC/CCS CLI 真实编译 → COMPILED/HIL_TESTED 状态推进）、测试评分 Agent、LabSight 仪器接入（示波器波形 / 摄像头流）
+- **二期**：真实编译流水线（CI 安装 arm-none-eabi-gcc/CCS CLI 编译后回写 `code_verifier` 的 external_status → COMPILED/HIL_TESTED；.github/workflows/ci.yml 已留注释位）、Agent 异步任务队列（run_id + 轮询/SSE，替代 120s 长请求）、ezPLM SSO 项目级权限（user_id/organization/membership）、LabSight 仪器接入、模块型号与硬件版本拆分（module_revisions）、参数证据等级（E0 AI 推断 → E6 多实验室复验）
 - **三期**：淘宝商品自动采集与 AI 芯片识别、模块知识图谱（依赖/替换/兼容/历届题目关系）、Word/PDF/LaTeX 报告导出、付费模块市场结算

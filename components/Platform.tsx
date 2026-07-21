@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { callAgent, api, getEmbedParams, emitToEzplm } from "./api";
 import { HomePage, ModulesPage, ProjectsPage } from "./pages-core";
 import { SolutionPage, WiringPage, CodePage, DebugPage, ReportPage } from "./pages-build";
+import { BomPage, TestingPage } from "./pages-work";
 
 export const STAGES = [
   "PREPARATION","PROBLEM_RECEIVED","REQUIREMENTS_PARSED","SOLUTION_CANDIDATES","SOLUTION_APPROVED",
@@ -19,19 +20,22 @@ const NAV = [
   { key: "solution", label: "方案生成", icon: "🧠" },
   { key: "modules",  label: "模块选型", icon: "🔲" },
   { key: "wiring",   label: "电路连线", icon: "🔌" },
+  { key: "bom",      label: "物料清单", icon: "📦" },
   { key: "code",     label: "代码生成", icon: "⌨️" },
   { key: "debug",    label: "调试助手", icon: "🔬" },
+  { key: "testing",  label: "测试评分", icon: "🧪" },
   { key: "projects", label: "我的项目", icon: "📁" },
   { key: "report",   label: "报告生成", icon: "📄" },
 ] as const;
 const NAV_SOON = [
   { label: "仿真验证", icon: "📈" },
-  { label: "实验平台", icon: "🧪" },
+  { label: "实验平台", icon: "⚗️" },
 ];
 export type PageKey = (typeof NAV)[number]["key"];
 const PAGE_TITLE: Record<PageKey, string> = {
   home: "首页", solution: "方案生成", modules: "模块选型",
-  wiring: "电路连线与接口检查", code: "代码生成", debug: "调试助手（LabSight）",
+  wiring: "电路连线与接口检查", bom: "物料清单（BOM 工作台）", code: "代码生成",
+  debug: "调试助手（LabSight）", testing: "测试与评分",
   report: "报告生成", projects: "我的项目",
 };
 
@@ -59,6 +63,10 @@ export default function Platform({ embed }: { embed: boolean }) {
   const [debugSession, setDebugSession] = useState<any>(null);
   const [report, setReport] = useState<any>(null);
   const [modules, setModules] = useState<any[]>([]);
+  const [backupSolution, setBackupSolution] = useState<any>(null);   // 备用方案
+  const [testPlan, setTestPlan] = useState<any>(null);
+  const [testRecords, setTestRecords] = useState<any[]>([]);
+  const [testResult, setTestResult] = useState<any>(null);           // verdicts + summary
   const [shortlist, setShortlist] = useState<string[]>([]); // 模块选型页「选用」的备选模块
 
   const say = useCallback((who: Msg["who"], text: string) => {
@@ -151,6 +159,111 @@ export default function Platform({ embed }: { embed: boolean }) {
       await advanceStage("REQUIREMENTS_PARSED", pid);
       emitToEzplm("requirements_ready", r.output);
     } else say("agent", "解析失败：" + (r.message || ""));
+  }
+
+  // ============ 需求编辑器动作 ============
+  function updateRequirement(id: string, patch: any) {
+    setRequirements((rq: any) => ({
+      ...rq,
+      requirements: (rq.requirements || []).map((r: any) => r.id === id ? { ...r, ...patch } : r),
+    }));
+  }
+  function setReqStatus(id: string, status: string) {
+    updateRequirement(id, { status, confirmed_at: status === "CONFIRMED" ? new Date().toISOString() : undefined });
+  }
+  function confirmAllExtracted() {
+    setRequirements((rq: any) => ({
+      ...rq,
+      requirements: (rq.requirements || []).map((r: any) =>
+        !r.status || r.status === "AI_EXTRACTED" ? { ...r, status: "CONFIRMED", confirmed_at: new Date().toISOString() } : r),
+    }));
+  }
+  function addRequirement() {
+    setRequirements((rq: any) => {
+      const list = rq?.requirements || [];
+      const nextId = "REQ-" + String(list.length + 1).padStart(3, "0") + "M";
+      return { ...(rq || {}), requirements: [...list, {
+        id: nextId, type: "functional", description: "", priority: "mandatory",
+        source: "人工补充", verification_method: "measurement", status: "CONFIRMED",
+        confirmed_at: new Date().toISOString(),
+      }] };
+    });
+  }
+
+  // ============ 方案编辑动作 ============
+  async function replaceBlock(solutionId: string, blockId: string, mod: any) {
+    const apply = (sol: any) => sol.solution_id !== solutionId ? sol : {
+      ...sol,
+      blocks: sol.blocks.map((b: any) => b.block_id === blockId
+        ? { ...b, module_id: mod.id, name: mod.name.length > 14 ? mod.name.slice(0, 14) : mod.name }
+        : b),
+      integration_precheck: undefined,   // 改动后预检失效
+    };
+    let updated: any = null;
+    setSolutions((ss: any) => {
+      if (!ss) return ss;
+      const next = { ...ss, solutions: ss.solutions.map(apply) };
+      updated = next.solutions.find((x: any) => x.solution_id === solutionId);
+      return next;
+    });
+    setChosenSolution((c: any) => (c?.solution_id === solutionId ? apply(c) : c));
+    setBackupSolution((c: any) => (c?.solution_id === solutionId ? apply(c) : c));
+    // 改动后立刻重跑接口检查（规则引擎，快）
+    setBusy(true);
+    const target = updated || (chosenSolution?.solution_id === solutionId ? apply(chosenSolution) : null);
+    if (target) {
+      const r = await callAgent("integration_checker", { solution: target }, projectId);
+      if (r.ok) {
+        const attach = (sol: any) => sol.solution_id === solutionId ? { ...sol, integration_precheck: r.output } : sol;
+        setSolutions((ss: any) => ss ? { ...ss, solutions: ss.solutions.map(attach) } : ss);
+        setChosenSolution((c: any) => c ? attach(c) : c);
+        setBackupSolution((c: any) => c ? attach(c) : c);
+        if (chosenSolution?.solution_id === solutionId) setWiringReport(r.output);
+        say("agent", `已把模块替换为「${mod.name}」并重跑接口检查：${r.output.passed ? "通过 ✓" : `发现 ${r.output.issues.filter((i: any) => i.severity === "blocker").length} 个阻断项`}`);
+      }
+    }
+    setBusy(false);
+  }
+  function markBackup(sol: any) {
+    setBackupSolution(sol);
+    say("agent", `已将 ${sol.solution_id}「${sol.name}」标记为备用方案。主方案受阻时可一键切换。`);
+  }
+  function swapToBackup() {
+    if (!backupSolution) return;
+    const prev = chosenSolution;
+    setChosenSolution(backupSolution);
+    setBackupSolution(prev);
+    setWiringReport(backupSolution.integration_precheck || null);
+    say("agent", `已切换到备用方案 ${backupSolution.solution_id}。原主方案转为备用。`);
+  }
+
+  // ============ 测试评分动作 ============
+  async function runTestPlan() {
+    if (!requirements) return { ok: false, message: "请先完成需求确认" } as any;
+    setBusy(true);
+    if (projectId && ["BOM_CONFIRMED", "HARDWARE_BUILD", "SOFTWARE_BUILD", "INTEGRATION"].includes(stage)) await advanceStage("TESTING");
+    const r = await callAgent("test_scoring", { requirements, records: testRecords }, projectId);
+    setBusy(false);
+    if (r.ok) { setTestPlan(r.output.plan); setTestResult(r.output); }
+    return r;
+  }
+  async function runScore(records: any[]) {
+    setTestRecords(records);
+    setBusy(true);
+    const r = await callAgent("test_scoring", { requirements, records, existing_plan: testPlan, generate_plan: false }, projectId);
+    setBusy(false);
+    if (r.ok) setTestResult(r.output);
+    return r;
+  }
+
+  // ============ 代码验证动作 ============
+  async function runVerify() {
+    if (!codeBundle?.files?.length) return { ok: false, message: "请先生成代码" } as any;
+    setBusy(true);
+    const r = await callAgent("code_verifier", { files: codeBundle.files }, projectId);
+    setBusy(false);
+    if (r.ok) setCodeBundle((b: any) => ({ ...b, verification_status: r.output.verification_status, verify_issues: r.output.issues, honest_note: r.output.honest_note }));
+    return r;
   }
 
   async function runSolution() {
@@ -275,8 +388,11 @@ export default function Platform({ embed }: { embed: boolean }) {
     params, busy, stage, stageIdx, projectId, projects, setProjectId, resetProject,
     problemText, setProblemText, requirements, solutions, chosenSolution,
     wiringReport, bom, codeBundle, debugSession, report, modules, shortlist, setShortlist,
+    backupSolution, testPlan, testRecords, testResult,
     msgs, chat, runInterpret, runSolution, approveSolution, runWiringCheck,
     runBomFromSolution, runBomFromText, runCode, runDebug, runReport, startFromDirection,
+    updateRequirement, setReqStatus, confirmAllExtracted, addRequirement,
+    replaceBlock, markBackup, swapToBackup, runTestPlan, runScore, runVerify,
     setPage, advanceStage,
   };
 
@@ -333,8 +449,10 @@ export default function Platform({ embed }: { embed: boolean }) {
           {page === "solution" && <SolutionPage ctx={ctx} />}
           {page === "modules" && <ModulesPage ctx={ctx} />}
           {page === "wiring" && <WiringPage ctx={ctx} />}
+          {page === "bom" && <BomPage ctx={ctx} />}
           {page === "code" && <CodePage ctx={ctx} />}
           {page === "debug" && <DebugPage ctx={ctx} />}
+          {page === "testing" && <TestingPage ctx={ctx} />}
           {page === "report" && <ReportPage ctx={ctx} />}
           {page === "projects" && <ProjectsPage ctx={ctx} />}
         </div>

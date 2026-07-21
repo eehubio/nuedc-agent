@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import type { UserTier, ModuleCertState } from "./types";
 import { MODULE_CERT_STATES, PAID_DOWNLOAD_MIN_STATE } from "./types";
+import { ADMIN_COOKIE, verifyAdminToken } from "./admin-session";
 
 // ============================================================
 // 鉴权策略：
@@ -12,6 +13,8 @@ import { MODULE_CERT_STATES, PAID_DOWNLOAD_MIN_STATE } from "./types";
 // ============================================================
 
 export function resolveTier(req: NextRequest): UserTier {
+  // 管理后台会话 cookie（短期 HMAC 令牌，浏览器不持有长期密钥）
+  if (verifyAdminToken(req.cookies.get(ADMIN_COOKIE)?.value, process.env.ADMIN_API_KEY)) return "admin";
   const key = req.headers.get("x-api-key") || "";
   if (process.env.ADMIN_API_KEY && key === process.env.ADMIN_API_KEY) return "admin";
   if (process.env.EZPLM_API_KEY && key === process.env.EZPLM_API_KEY) {

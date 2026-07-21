@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CertBadge } from "./pages-core";
-import { CATEGORY_TREE, FLAT_CATEGORIES, categoryLabel, PROTOCOL_ENUM, CERT_STATES, SOURCE_TYPES } from "../data/categories";
+import { CATEGORY_TREE, FLAT_CATEGORIES, categoryLabel, PROTOCOL_ENUM, SOURCE_TYPES } from "../data/categories";
 
 type Toast = { kind: "ok" | "err"; msg: string } | null;
 const EMPTY: any = {
@@ -25,26 +25,28 @@ export default function AdminClient() {
   const [isNew, setIsNew] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
 
-  const H = useCallback((k: string) => ({ "content-type": "application/json", "X-Api-Key": k }), []);
+  const H = useCallback((_k?: string) => ({ "content-type": "application/json" }), []);  // 鉴权走 httpOnly cookie
   const flash = (kind: "ok" | "err", msg: string) => { setToast({ kind, msg }); setTimeout(() => setToast(null), 2600); };
 
-  const load = useCallback(async (k: string) => {
-    const g = await fetch("/api/modules/governance", { headers: H(k) });
+  const load = useCallback(async (_k?: string) => {
+    const g = await fetch("/api/modules/governance");
     if (!g.ok) throw new Error((await g.json()).error || "未授权");
     setGov(await g.json());
-    const m = await fetch("/api/modules?status=all&limit=500", { headers: H(k) });
+    const m = await fetch("/api/modules?status=all&limit=500");
     setMods((await m.json()).modules || []);
-  }, [H]);
+  }, []);
 
   useEffect(() => {
-    const saved = sessionStorage.getItem("nuedc_admin_key");
-    if (saved) { setKey(saved); load(saved).then(() => setAuthed(true)).catch(() => {}); }
+    // 已有会话 cookie 则直接进入
+    load().then(() => setAuthed(true)).catch(() => {});
   }, [load]);
 
   async function login() {
     setLoginErr("");
-    try { await load(key); sessionStorage.setItem("nuedc_admin_key", key); setAuthed(true); }
-    catch (e: any) { setLoginErr(e.message || "密钥错误"); }
+    const r = await fetch("/api/admin/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key }) });
+    if (!r.ok) { setLoginErr((await r.json()).error || "密钥错误"); return; }
+    setKey("");                      // 密钥用后即弃，不存任何浏览器存储
+    await load(); setAuthed(true);
   }
 
   function openEditor(m: any) { setDraft(JSON.parse(JSON.stringify(m))); setIsNew(false); }
@@ -61,7 +63,7 @@ export default function AdminClient() {
     if (!draft.id || !draft.name) return flash("err", "id 与 name 为必填");
     const url = isNew ? "/api/modules" : `/api/modules/${draft.id}`;
     const method = isNew ? "POST" : "PATCH";
-    const body = isNew ? draft : (({ id, ...rest }) => rest)(draft);
+    const body = isNew ? draft : (({ id, certification_status, _completeness, downloads, rating, ...rest }: any) => rest)(draft);
     const r = await fetch(url, { method, headers: H(key), body: JSON.stringify(body) });
     const d = await r.json();
     if (r.ok) { flash("ok", isNew ? "已创建（DRAFT 待审核）" : "已保存"); setDraft(null); load(key); }
@@ -105,7 +107,7 @@ export default function AdminClient() {
         <span style={{ flex: 1 }} />
         <a className="btn ghost sm" href="/">站点首页</a>
         <button className="btn ghost sm" onClick={exportAll}>⬇ 导出</button>
-        <button className="btn ghost sm" onClick={() => { sessionStorage.removeItem("nuedc_admin_key"); setAuthed(false); }}>退出</button>
+        <button className="btn ghost sm" onClick={async () => { await fetch("/api/admin/session", { method: "DELETE" }); setAuthed(false); }}>退出</button>
       </div>
 
       {tab === "governance" && <Governance gov={gov} onReview={review} />}
@@ -193,10 +195,8 @@ function Editor({ draft, setDraft, isNew, onSave, onCancel, onReview }: any) {
           <F label="主芯片"><input value={draft.main_chip || ""} onChange={(e) => set("main_chip", e.target.value)} placeholder="BMP280" /></F>
           <F label="价格 (¥)"><input type="number" value={draft.price ?? 0} onChange={(e) => set("price", Number(e.target.value))} /></F>
           <F label="版本"><input value={draft.version || "1.0.0"} onChange={(e) => set("version", e.target.value)} /></F>
-          <F label="认证状态">
-            <select value={draft.certification_status} onChange={(e) => set("certification_status", e.target.value)}>
-              {CERT_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+          <F label="认证状态（只读，通过下方审核动作变更）">
+            <input value={draft.certification_status} disabled />
           </F>
           <F label="标签（逗号分隔）"><input value={(draft.tags || []).join(", ")}
             onChange={(e) => set("tags", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} /></F>

@@ -51,6 +51,7 @@ export const CATEGORY_TREE: CategoryGroup[] = [
     { key: "power.boost", label: "升压 (Boost)" },
     { key: "power.ldo", label: "LDO / 线性" },
     { key: "power.reference", label: "基准源" },
+    { key: "power.inverter", label: "逆变 / 功率级" },
   ]},
   { key: "comm", label: "通信模块", icon: "📶", children: [
     { key: "comm.wireless_2g4", label: "2.4G 无线" },
@@ -58,8 +59,29 @@ export const CATEGORY_TREE: CategoryGroup[] = [
     { key: "comm.lora", label: "LoRa" },
     { key: "comm.wired", label: "有线 (CAN/RS485)" },
   ]},
+  { key: "display", label: "显示与人机交互", icon: "🖥️", children: [
+    { key: "display.screen", label: "屏幕 (TFT/OLED)" },
+    { key: "display.hmi", label: "按键 / 编码器 / 触摸" },
+  ]},
+  { key: "magnetics", label: "磁性器件", icon: "🧲", children: [
+    { key: "magnetics.core", label: "磁环 / 磁芯" },
+    { key: "magnetics.transformer", label: "变压器 / 电感" },
+  ]},
+  { key: "robot", label: "机器人与运动平台", icon: "🤖", children: [
+    { key: "robot.chassis", label: "底盘 / 车体" },
+    { key: "robot.gimbal", label: "云台 / 机械臂" },
+    { key: "robot.aircraft", label: "飞行平台" },
+  ]},
+  { key: "protect", label: "安全保护与连接", icon: "🛡️", children: [
+    { key: "protect.protection", label: "保护 (过流/隔离/TVS)" },
+    { key: "protect.connector", label: "连接器 / 线缆" },
+  ]},
+  { key: "instrument", label: "测试仪表与校准", icon: "📏", children: [
+    { key: "instrument.meter", label: "测量前端 / 表头" },
+    { key: "instrument.calibration", label: "校准 / 基准" },
+  ]},
   { key: "other", label: "其他", icon: "🔲", children: [
-    { key: "other.display", label: "显示" },
+    { key: "other.mechanical", label: "机械结构 / 耗材" },
     { key: "other.misc", label: "杂项" },
   ]},
 ];

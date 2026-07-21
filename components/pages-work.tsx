@@ -1,0 +1,232 @@
+"use client";
+import { useMemo, useState } from "react";
+import { emitToEzplm } from "./api";
+
+/* ============ BOM 工作台 ============ */
+const PROC_STATUS = ["待采购", "已下单", "已到货", "库存借用", "自制"] as const;
+
+export function BomPage({ ctx }: { ctx: any }) {
+  const items: any[] = ctx.bom?.items || [];
+  // 本地工作台状态：库存数 / 采购状态（叠加在 BOM 之上，导出时合并）
+  const [local, setLocal] = useState<Record<string, { stock: number; status: string }>>({});
+  const [group, setGroup] = useState<string>("all");
+  const L = (id: string) => local[id] || { stock: 0, status: "待采购" };
+  const setL = (id: string, patch: any) => setLocal((s) => ({ ...s, [id]: { ...L(id), ...patch } }));
+
+  const groups = [
+    { key: "all", label: "全部" },
+    { key: "module", label: "功能模块" },
+    { key: "component", label: "裸器件" },
+    { key: "shortage", label: "⚠ 缺料" },
+    { key: "review", label: "需人工确认" },
+  ];
+  const shown = useMemo(() => items.filter((it) => {
+    const l = L(it.line_id);
+    const short = l.stock < it.quantity && l.status !== "已到货";
+    if (group === "module") return it.source_type === "module";
+    if (group === "component") return it.source_type === "component";
+    if (group === "shortage") return short;
+    if (group === "review") return it.needs_review;
+    return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [items, group, local]);
+
+  const shortage = items.filter((it) => L(it.line_id).stock < it.quantity && L(it.line_id).status !== "已到货").length;
+
+  function exportCsv() {
+    const head = ["行号","名称","MPN","厂商","类别","封装","数量","库存","缺口","采购状态","替代料","单价","置信度","需确认"];
+    const rows = items.map((it) => {
+      const l = L(it.line_id);
+      return [it.line_id, it.name, it.mpn, it.manufacturer || "", it.category, it.package || "",
+        it.quantity, l.stock, Math.max(0, it.quantity - l.stock), l.status,
+        (it.substitutes || []).join(" / "), it.unit_price ?? "", it.confidence, it.needs_review ? "是" : ""];
+    });
+    const csv = "\ufeff" + [head, ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    a.download = `BOM-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+  }
+  function syncEzplm() {
+    emitToEzplm("bom_ready", { items: items.map((it) => ({ ...it, ...L(it.line_id) })) });
+  }
+
+  if (!items.length) return (
+    <div className="card">
+      <h3>物料清单还是空的</h3>
+      <p className="hint">两种方式生成 BOM：</p>
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <button className="btn sm" disabled={ctx.busy || !ctx.chosenSolution} onClick={ctx.runBomFromSolution}>从已确认方案生成</button>
+        <BomPaste ctx={ctx} />
+      </div>
+      {!ctx.chosenSolution && <p className="hint" style={{ marginTop: 8 }}>（从方案生成需要先在「方案生成」页确认一套方案）</p>}
+    </div>
+  );
+
+  return (
+    <>
+      <div className="statsbar" style={{ marginBottom: 14 }}>
+        <span><b>{items.length}</b> 行物料</span>
+        <span><b style={{ color: shortage ? "var(--red)" : "var(--ok)" }}>{shortage}</b> 行缺料</span>
+        <span><b>{items.filter((i) => i.needs_review).length}</b> 行需人工确认</span>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <button className="btn ghost sm" disabled={ctx.busy} onClick={ctx.runBomFromSolution}>重新生成</button>
+          <button className="btn ghost sm" onClick={exportCsv}>⬇ 导出 Excel (CSV)</button>
+          <button className="btn sm" onClick={syncEzplm}>同步到 ezPLM</button>
+        </span>
+      </div>
+      <div className="filterbar">
+        {groups.map((g) => (
+          <button key={g.key} className={"fchip" + (group === g.key ? " on" : "")} onClick={() => setGroup(g.key)}>{g.label}</button>
+        ))}
+        <span className="hint" style={{ marginLeft: "auto" }}>库存与采购状态在本页维护，导出/同步时合并</span>
+      </div>
+      <div className="card" style={{ padding: 8 }}>
+        <table className="data">
+          <thead><tr>
+            <th>行号</th><th>名称 / MPN</th><th>数量</th><th>库存</th><th>缺口</th><th>采购状态</th><th>替代料</th><th></th>
+          </tr></thead>
+          <tbody>
+            {shown.map((it) => {
+              const l = L(it.line_id);
+              const gap = Math.max(0, it.quantity - l.stock);
+              return (
+                <tr key={it.line_id} style={it.needs_review ? { background: "#fffbeb" } : undefined}>
+                  <td className="hint">{it.line_id}</td>
+                  <td><b>{it.name}</b><br /><span className="hint">{it.mpn}{it.manufacturer ? ` · ${it.manufacturer}` : ""}{it.package ? ` · ${it.package}` : ""}</span></td>
+                  <td><b>{it.quantity}</b></td>
+                  <td><input type="number" min={0} value={l.stock} style={{ width: 58, padding: 4, border: "1px solid var(--line)", borderRadius: 6 }}
+                    onChange={(e) => setL(it.line_id, { stock: Number(e.target.value) })} /></td>
+                  <td>{gap > 0 && l.status !== "已到货" ? <span className="chip red">缺 {gap}</span> : <span className="chip green">✓</span>}</td>
+                  <td>
+                    <select value={l.status} onChange={(e) => setL(it.line_id, { status: e.target.value })}
+                      style={{ padding: 4, border: "1px solid var(--line)", borderRadius: 6 }}>
+                      {PROC_STATUS.map((s) => <option key={s}>{s}</option>)}
+                    </select>
+                  </td>
+                  <td className="hint">{(it.substitutes || []).join("、") || "—"}</td>
+                  <td>{it.needs_review && <span className="chip gold">置信度 {Math.round(it.confidence * 100)}%</span>}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {ctx.bom?.unresolved_items?.length > 0 && (
+        <div className="issue warning" style={{ marginTop: 10 }}>无法解析的行（原文保留）：{ctx.bom.unresolved_items.join("；")}</div>
+      )}
+    </>
+  );
+}
+
+function BomPaste({ ctx }: { ctx: any }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  if (!open) return <button className="btn ghost sm" onClick={() => setOpen(true)}>粘贴文本/CSV 整理</button>;
+  return (
+    <div className="modal-mask" onClick={() => setOpen(false)}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>粘贴物料文本</h3>
+        <textarea className="area" rows={8} value={text} onChange={(e) => setText(e.target.value)}
+          placeholder={"每行一项，随意格式即可：\nMSPM0G3507 开发板 2块\ntb6612 电机驱动*1\n10k 0603 电阻 x20"} />
+        <div style={{ textAlign: "right", marginTop: 10, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button className="btn ghost sm" onClick={() => setOpen(false)}>取消</button>
+          <button className="btn sm" disabled={ctx.busy || !text.trim()} onClick={async () => { await ctx.runBomFromText(text); setOpen(false); }}>整理</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============ 测试与评分工作台 ============ */
+export function TestingPage({ ctx }: { ctx: any }) {
+  const reqs: any[] = (ctx.requirements?.requirements || []).filter((r: any) => r.status !== "REJECTED");
+  const plan: any[] = ctx.testPlan?.test_cases || [];
+  const planOf = (id: string) => plan.find((t) => t.requirement_id === id);
+  const [records, setRecords] = useState<Record<string, any>>(
+    Object.fromEntries((ctx.testRecords || []).map((r: any) => [r.requirement_id, r]))
+  );
+  const R = (id: string) => records[id] || { requirement_id: id };
+  const setR = (id: string, patch: any) => setRecords((s) => ({ ...s, [id]: { ...R(id), ...patch } }));
+  const verdictOf = (id: string) => ctx.testResult?.verdicts?.find((v: any) => v.requirement_id === id);
+  const sum = ctx.testResult?.summary;
+
+  if (!reqs.length) return (
+    <div className="card"><h3>测试评分需要需求清单</h3>
+      <p className="hint">请先在「方案生成」页解析赛题并逐条确认需求 —— 每条需求就是一个测试项。</p></div>
+  );
+
+  return (
+    <>
+      {sum && (
+        <div className="statsbar" style={{ marginBottom: 14 }}>
+          <span>基本要求 <b style={{ color: sum.blockers.length ? "var(--red)" : "var(--ok)" }}>{sum.mandatory_passed}/{sum.mandatory_total}</b></span>
+          <span>发挥要求 <b>{sum.bonus_passed}/{sum.bonus_total}</b></span>
+          <span>预计得分 <b>{sum.score_low} ~ {sum.score_high}</b></span>
+          <span>未测 <b>{sum.untested}</b></span>
+          {sum.blockers.length > 0 && <span className="chip red">阻断 {sum.blockers.length}</span>}
+        </div>
+      )}
+      {sum?.next_best_actions?.length > 0 && (
+        <div className="issue info" style={{ marginBottom: 12, display: "block" }}>
+          🎯 收益最高的下一步：{sum.next_best_actions[0]}
+        </div>
+      )}
+
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <b>测试计划</b>
+          <span className="hint">仪器 / 测点 / 步骤 / 判据由测试 Agent 生成；判定与得分为纯规则计算，不经过大模型。</span>
+          <span style={{ flex: 1 }} />
+          <button className="btn ghost sm" disabled={ctx.busy} onClick={ctx.runTestPlan}>{plan.length ? "重新生成计划" : "生成测试计划"}</button>
+          <button className="btn sm" disabled={ctx.busy} onClick={() => ctx.runScore(Object.values(records))}>计算判定与得分</button>
+        </div>
+      </div>
+
+      {reqs.map((r: any) => {
+        const p = planOf(r.id);
+        const v = verdictOf(r.id);
+        const rec = R(r.id);
+        return (
+          <div key={r.id} className="card" style={{ marginBottom: 10, borderLeft: `3px solid ${v?.passed === true ? "var(--ok)" : v?.passed === false ? "var(--red)" : "var(--line)"}` }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+              <span className="rid" style={{ fontFamily: "var(--mono)", fontWeight: 700, color: "var(--blue-deep)" }}>{r.id}</span>
+              <b>{r.description}</b>
+              {r.priority === "mandatory" ? <span className="chip red">基本</span> : <span className="chip violet">发挥</span>}
+              {r.target != null && <span className="chip">指标 {r.target}{r.unit || ""}{r.tolerance ? ` ${r.tolerance}` : ""}</span>}
+              <span style={{ flex: 1 }} />
+              {v?.passed === true && <span className="chip green">✓ 通过</span>}
+              {v?.passed === false && <span className="chip red">✗ 未通过</span>}
+              {v && v.passed === null && <span className="chip">未测</span>}
+            </div>
+            {p && (
+              <p className="hint" style={{ margin: "6px 0" }}>
+                🔧 {p.instrument} · 测点：{(p.measure_points || []).join("、")} · 判据：{p.threshold}
+                {p.pitfalls && <><br />⚠ {p.pitfalls}</>}
+              </p>
+            )}
+            {p?.steps?.length > 0 && (
+              <ol className="hint" style={{ margin: "4px 0 8px 18px" }}>
+                {p.steps.map((s: string, i: number) => <li key={i}>{s}</li>)}
+              </ol>
+            )}
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <label className="hint">实测值
+                <input value={rec.measured_value ?? ""} style={{ width: 110, marginLeft: 6, padding: 5, border: "1px solid var(--line)", borderRadius: 6 }}
+                  onChange={(e) => setR(r.id, { measured_value: e.target.value })} placeholder={r.unit || "数值"} />
+              </label>
+              <label className="hint">证据（URL/说明）
+                <input value={(rec.evidence || [])[0] ?? ""} style={{ width: 200, marginLeft: 6, padding: 5, border: "1px solid var(--line)", borderRadius: 6 }}
+                  onChange={(e) => setR(r.id, { evidence: e.target.value ? [e.target.value] : [] })} placeholder="波形截图/CSV 链接" />
+              </label>
+              <span className="hint">人工判定：</span>
+              <button className={"btn sm" + (rec.pass_override === true ? " ok" : " ghost")} onClick={() => setR(r.id, { pass_override: rec.pass_override === true ? null : true })}>通过</button>
+              <button className={"btn ghost sm" + (rec.pass_override === false ? " danger" : "")} onClick={() => setR(r.id, { pass_override: rec.pass_override === false ? null : false })}>不通过</button>
+              {v && <span className="hint" style={{ marginLeft: "auto" }}>{v.detail}</span>}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}

@@ -2,4 +2,5 @@
 import "./planning";
 import "./engineering";
 import "./delivery";
+import "./verification";
 export { runAgent, type AgentContext } from "./base";

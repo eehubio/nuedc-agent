@@ -133,25 +133,7 @@ export function SolutionPage({ ctx }: { ctx: any }) {
 
         {/* 右：需求 → 方案卡片 */}
         <div style={{ display: "grid", gap: 14 }}>
-          {ctx.requirements && (
-            <div className="card">
-              <h3>结构化需求清单 <span className="hint" style={{ fontWeight: 400 }}>{ctx.requirements.requirements?.length ?? 0} 条 · 请人工核对</span></h3>
-              {(ctx.requirements.requirements || []).map((r: any) => (
-                <div key={r.id} className="req-item">
-                  <span className="rid">{r.id}</span>
-                  <span>{r.text || r.description}{r.metric ? `（指标：${r.metric}）` : ""}</span>
-                  {r.priority === "must" && <span className="must">基本要求</span>}
-                </div>
-              ))}
-              {ctx.requirements.ambiguities?.length > 0 && (
-                <div style={{ marginTop: 10 }}>
-                  {ctx.requirements.ambiguities.map((a: any, i: number) => (
-                    <div key={i} className="issue warning">❓ 歧义：{typeof a === "string" ? a : a.text || JSON.stringify(a)}</div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          {ctx.requirements && <RequirementEditor ctx={ctx} />}
 
           {(ctx.solutions?.solutions || []).map((sol: any) => {
             const pre = sol.integration_precheck;
@@ -175,9 +157,13 @@ export function SolutionPage({ ctx }: { ctx: any }) {
                 {sol.uncovered_requirements?.length > 0 && (
                   <div className="issue warning">⚠ 未覆盖需求：{sol.uncovered_requirements.join("、")}</div>
                 )}
-                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                  {!chosen && <button className="btn sm" disabled={ctx.busy} onClick={() => ctx.approveSolution(sol)}>采用此方案</button>}
-                  {chosen && <span className="chip green" style={{ alignSelf: "center" }}>✓ 已确认 —— 可进入 BOM / 代码</span>}
+                <BlockList sol={sol} ctx={ctx} />
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center", marginTop: 8 }}>
+                  {ctx.backupSolution?.solution_id === sol.solution_id && <span className="chip violet">备用方案</span>}
+                  {!chosen && <button className="btn ghost sm" onClick={() => ctx.markBackup(sol)}>设为备用</button>}
+                  {!chosen && <button className="btn sm" disabled={ctx.busy} onClick={() => ctx.approveSolution(sol)}>采用为主方案</button>}
+                  {chosen && <span className="chip green">✓ 主方案 —— 可进入 BOM / 代码</span>}
+                  {chosen && ctx.backupSolution && <button className="btn ghost sm" onClick={ctx.swapToBackup}>切换到备用 ⇄</button>}
                 </div>
               </div>
             );
@@ -313,7 +299,22 @@ export function CodePage({ ctx }: { ctx: any }) {
         {err && <div className="issue blocker" style={{ marginTop: 10 }}>{err}</div>}
         {b && (
           <>
-            <div className="issue info" style={{ marginTop: 10 }}>状态：<b>{b.verification_status}</b> —— 真实编译验证为二期功能，编译通过前不得视为可用。</div>
+            <div className="issue info" style={{ marginTop: 10, display: "block" }}>
+              验证状态：<b>{b.verification_status}</b>
+              <div style={{ display: "flex", gap: 3, margin: "6px 0" }}>
+                {["GENERATED", "SYNTAX_CHECKED", "COMPILED", "UNIT_TESTED", "HIL_TESTED"].map((st) => (
+                  <span key={st} className={"chip" + (b.verification_status === st ? " green" : "")} style={{ fontSize: 10 }}>{st}</span>
+                ))}
+              </div>
+              未达 COMPILED 的代码一律不得视为可用。
+            </div>
+            <button className="btn ghost" style={{ width: "100%", marginTop: 8 }} disabled={ctx.busy} onClick={ctx.runVerify}>🔍 静态验证</button>
+            {b.verify_issues?.length > 0 && b.verify_issues.map((is: any, i: number) => (
+              <div key={i} className={"issue " + (is.severity === "error" ? "blocker" : "warning")} style={{ marginTop: 6 }}>
+                <span className="tag">{is.file}</span><span>{is.message}</span>
+              </div>
+            ))}
+            {b.honest_note && <p className="hint" style={{ marginTop: 6 }}>{b.honest_note}</p>}
             {b.unsupported_items?.length > 0 && (
               <div className="issue warning">以下内容无法可靠生成（不编造 API）：{b.unsupported_items.join("、")}</div>
             )}
@@ -450,5 +451,163 @@ export function ReportPage({ ctx }: { ctx: any }) {
         <div className="report-md">{r?.markdown || r?.content || "生成后这里预览报告全文。\n\n报告将基于已确认的方案、结构化需求与 BOM 撰写，遵循电赛设计报告章节规范。"}</div>
       </div>
     </div>
+  );
+}
+
+
+/* ============ 需求编辑器（逐条编辑 / 确认 / 驳回）============ */
+const REQ_STATUS_UI: Record<string, [string, string]> = {
+  AI_EXTRACTED: ["AI 提取", "chip"], NEEDS_REVIEW: ["待核对", "chip gold"], AMBIGUOUS: ["歧义", "chip gold"],
+  CONFIRMED: ["已确认", "chip green"], REJECTED: ["已驳回", "chip red"],
+};
+function RequirementEditor({ ctx }: { ctx: any }) {
+  const list: any[] = ctx.requirements?.requirements || [];
+  const [editing, setEditing] = useState<string | null>(null);
+  const mand = list.filter((r) => r.priority === "mandatory" && r.status !== "REJECTED");
+  const confirmed = mand.filter((r) => r.status === "CONFIRMED").length;
+  const allConfirmed = confirmed === mand.length && mand.length > 0;
+
+  return (
+    <div className="card">
+      <h3>需求清单
+        <span className="hint" style={{ fontWeight: 400 }}>基本要求已确认 {confirmed}/{mand.length}</span>
+        <span style={{ flex: 1 }} />
+        <button className="btn ghost sm" onClick={ctx.addRequirement}>＋ 补充需求</button>
+        <button className="btn sm" onClick={ctx.confirmAllExtracted}>全部确认</button>
+      </h3>
+      <div className="progress"><i style={{ width: `${mand.length ? (confirmed / mand.length) * 100 : 0}%` }} /></div>
+      {!allConfirmed && <p className="hint">⚠ 所有基本要求逐条确认后才能生成正式方案 —— 第一步解析错了，后面的方案 / BOM / 代码 / 报告会一路错下去。</p>}
+
+      {list.map((r) => {
+        const [label, cls] = REQ_STATUS_UI[r.status || "AI_EXTRACTED"] || ["?", "chip"];
+        const isEdit = editing === r.id;
+        return (
+          <div key={r.id} className="req-item" style={{ flexWrap: "wrap", opacity: r.status === "REJECTED" ? 0.5 : 1 }}>
+            <span className="rid">{r.id}</span>
+            {isEdit ? (
+              <span style={{ flex: 1, display: "grid", gap: 5 }}>
+                <input value={r.description} onChange={(e) => ctx.updateRequirement(r.id, { description: e.target.value })}
+                  style={{ padding: 5, border: "1px solid var(--line)", borderRadius: 6, width: "100%" }} />
+                <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <input value={r.target ?? ""} placeholder="指标" style={{ width: 76, padding: 4, border: "1px solid var(--line)", borderRadius: 6 }}
+                    onChange={(e) => ctx.updateRequirement(r.id, { target: e.target.value })} />
+                  <input value={r.unit ?? ""} placeholder="单位" style={{ width: 56, padding: 4, border: "1px solid var(--line)", borderRadius: 6 }}
+                    onChange={(e) => ctx.updateRequirement(r.id, { unit: e.target.value })} />
+                  <input value={r.tolerance ?? ""} placeholder="误差 ±1%" style={{ width: 80, padding: 4, border: "1px solid var(--line)", borderRadius: 6 }}
+                    onChange={(e) => ctx.updateRequirement(r.id, { tolerance: e.target.value })} />
+                  <select value={r.priority} onChange={(e) => ctx.updateRequirement(r.id, { priority: e.target.value })}
+                    style={{ padding: 4, border: "1px solid var(--line)", borderRadius: 6 }}>
+                    <option value="mandatory">基本要求</option><option value="bonus">发挥部分</option>
+                  </select>
+                  <select value={r.verification_method} onChange={(e) => ctx.updateRequirement(r.id, { verification_method: e.target.value })}
+                    style={{ padding: 4, border: "1px solid var(--line)", borderRadius: 6 }}>
+                    {["measurement", "demonstration", "inspection", "analysis"].map((v) => <option key={v}>{v}</option>)}
+                  </select>
+                  <button className="btn sm" onClick={() => setEditing(null)}>完成</button>
+                </span>
+              </span>
+            ) : (
+              <span style={{ flex: 1 }}>
+                {r.description}
+                {r.target != null && <span className="hint">（{r.target}{r.unit || ""}{r.tolerance ? ` ${r.tolerance}` : ""}）</span>}
+                {r.source && <><br /><span className="hint">📎 {r.source}</span></>}
+              </span>
+            )}
+            <span style={{ display: "flex", gap: 4, alignItems: "center", flexShrink: 0 }}>
+              <span className={cls}>{label}</span>
+              {r.priority === "mandatory" && <span className="must">基本</span>}
+              {!isEdit && <button className="btn ghost sm" onClick={() => setEditing(r.id)}>改</button>}
+              {r.status !== "CONFIRMED" && <button className="btn sm ok" onClick={() => ctx.setReqStatus(r.id, "CONFIRMED")}>✓</button>}
+              {r.status !== "REJECTED" && <button className="btn ghost sm" onClick={() => ctx.setReqStatus(r.id, "REJECTED")}>✕</button>}
+            </span>
+          </div>
+        );
+      })}
+      {ctx.requirements.ambiguities?.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          {ctx.requirements.ambiguities.map((a: any, i: number) => (
+            <div key={i} className="issue warning">❓ 题面歧义：{typeof a === "string" ? a : a.text || JSON.stringify(a)}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============ 方案块清单：替换模块 + 需求覆盖矩阵 ============ */
+function BlockList({ sol, ctx }: { sol: any; ctx: any }) {
+  const [replacing, setReplacing] = useState<any>(null);   // block
+  const [q, setQ] = useState("");
+  const [showMatrix, setShowMatrix] = useState(false);
+  const reqs = (ctx.requirements?.requirements || []).filter((r: any) => r.status !== "REJECTED");
+  const otherSol = (ctx.solutions?.solutions || []).find((x: any) => x.solution_id !== sol.solution_id);
+
+  const candidates = replacing ? [
+    // 另一套方案中同角色的模块置顶（支持"从两套方案合并"）
+    ...(otherSol?.blocks || [])
+      .filter((b: any) => b.role === replacing.role && b.module_id && b.module_id !== replacing.module_id)
+      .map((b: any) => ({ ...(ctx.modules.find((m: any) => m.id === b.module_id) || { id: b.module_id, name: b.name }), _from: otherSol.solution_id })),
+    ...ctx.modules.filter((m: any) =>
+      m.id !== replacing.module_id &&
+      (!q || `${m.name} ${m.main_chip} ${m.id}`.toLowerCase().includes(q.toLowerCase()))),
+  ].filter((m: any, i: number, arr: any[]) => arr.findIndex((x) => x.id === m.id) === i).slice(0, 30) : [];
+
+  return (
+    <>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "4px 0" }}>
+        {(sol.blocks || []).map((b: any) => (
+          <span key={b.block_id} className="chip" style={{ display: "inline-flex", gap: 5, alignItems: "center", padding: "3px 6px 3px 10px" }}>
+            {b.name}
+            <button style={{ border: 0, background: "#fff", borderRadius: 5, padding: "0 6px", cursor: "pointer", fontSize: 11 }}
+              onClick={() => { setReplacing(b); setQ(""); }}>替换</button>
+          </span>
+        ))}
+        <button className="btn ghost sm" onClick={() => setShowMatrix(!showMatrix)}>{showMatrix ? "收起" : "需求覆盖矩阵"}</button>
+      </div>
+
+      {showMatrix && (
+        <table className="data" style={{ margin: "6px 0" }}>
+          <thead><tr><th>需求</th>{(sol.blocks || []).map((b: any) => <th key={b.block_id} style={{ writingMode: undefined }}>{b.name}</th>)}<th>覆盖</th></tr></thead>
+          <tbody>
+            {reqs.map((r: any) => {
+              const hit = (sol.blocks || []).filter((b: any) => (b.covers_requirements || []).includes(r.id));
+              return (
+                <tr key={r.id} style={!hit.length ? { background: "#fdecec" } : undefined}>
+                  <td><b>{r.id}</b> <span className="hint">{r.description.slice(0, 20)}</span></td>
+                  {(sol.blocks || []).map((b: any) => (
+                    <td key={b.block_id} style={{ textAlign: "center" }}>{(b.covers_requirements || []).includes(r.id) ? "✓" : ""}</td>
+                  ))}
+                  <td>{hit.length ? <span className="chip green">✓</span> : <span className="chip red">未覆盖</span>}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {replacing && (
+        <div className="modal-mask" onClick={() => setReplacing(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>替换「{replacing.name}」</h3>
+            <p className="hint">选择替换模块后自动重跑接口规则检查。来自另一套方案的同角色模块排在最前（支持两套方案合并取用）。</p>
+            <input placeholder="搜索模块 / 芯片…" value={q} onChange={(e) => setQ(e.target.value)}
+              style={{ width: "100%", padding: 8, border: "1px solid var(--line)", borderRadius: 8, margin: "8px 0" }} />
+            {candidates.map((m: any) => (
+              <div key={m.id} className="req-item" style={{ alignItems: "center" }}>
+                <span style={{ flex: 1 }}>
+                  <b>{m.name}</b> {m._from && <span className="chip violet">来自 {m._from}</span>}
+                  <br /><span className="hint">{m.main_chip || m.id}</span>
+                </span>
+                <button className="btn sm" disabled={ctx.busy}
+                  onClick={async () => { setReplacing(null); await ctx.replaceBlock(sol.solution_id, replacing.block_id, m); }}>选用</button>
+              </div>
+            ))}
+            <div style={{ textAlign: "right", marginTop: 10 }}>
+              <button className="btn ghost sm" onClick={() => setReplacing(null)}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

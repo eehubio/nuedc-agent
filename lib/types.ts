@@ -31,17 +31,20 @@ export const STAGE_ALLOWED_AGENTS: Record<ProjectStage, AgentType[]> = {
   REQUIREMENTS_PARSED: ["orchestrator", "solution_architect", "module_knowledge", "integration_checker"],
   SOLUTION_CANDIDATES: ["orchestrator", "solution_architect", "integration_checker", "module_knowledge", "bom_agent"],
   SOLUTION_APPROVED: ["orchestrator", "bom_agent", "procurement_planner", "integration_checker", "code_generator"],
-  BOM_CONFIRMED: ["orchestrator", "code_generator", "integration_checker", "labsight_debug"],
+  BOM_CONFIRMED: ["orchestrator", "code_verifier", "code_generator", "integration_checker", "labsight_debug"],
   HARDWARE_BUILD: ["orchestrator", "labsight_debug", "module_knowledge", "integration_checker"],
-  SOFTWARE_BUILD: ["orchestrator", "code_generator", "labsight_debug"],
-  INTEGRATION: ["orchestrator", "integration_checker", "labsight_debug", "code_generator"],
-  TESTING: ["orchestrator", "labsight_debug", "test_scoring"],
+  SOFTWARE_BUILD: ["orchestrator", "code_verifier", "code_generator", "labsight_debug"],
+  INTEGRATION: ["orchestrator", "code_verifier", "integration_checker", "labsight_debug", "code_generator"],
+  TESTING: ["orchestrator", "code_verifier", "labsight_debug", "test_scoring"],
   OPTIMIZATION: ["orchestrator", "test_scoring", "code_generator", "labsight_debug"],
   REPORTING: ["orchestrator", "report_composer", "test_scoring"],
   SUBMITTED: ["orchestrator"],
 };
 
 // ---------- Agent 类型 ----------
+export const CODE_VERIFY_STATES = ["GENERATED", "SYNTAX_CHECKED", "COMPILED", "UNIT_TESTED", "HIL_TESTED", "FIELD_VERIFIED"] as const;
+export type CodeVerifyState = (typeof CODE_VERIFY_STATES)[number];
+
 export const AGENT_TYPES = [
   "orchestrator",         // 总控编排
   "problem_interpreter",  // 赛题理解
@@ -127,15 +130,21 @@ export const PAID_DOWNLOAD_MIN_STATE: ModuleCertState = "FUNCTION_TESTED";
 export type ModuleSourceType = "official" | "taobao" | "lab" | "opensource";
 
 // ---------- 需求对象（赛题理解 Agent 输出）----------
+export const REQ_STATUSES = ["AI_EXTRACTED", "NEEDS_REVIEW", "CONFIRMED", "REJECTED", "AMBIGUOUS"] as const;
+export type ReqStatus = (typeof REQ_STATUSES)[number];
+
 export interface Requirement {
   id: string;                       // REQ-001
   type: "functional" | "performance" | "constraint" | "bonus";
   description: string;
   target?: number | string;
   unit?: string;
+  tolerance?: string;               // 允许误差，如 "±1%" / "≤5cm"
   priority: "mandatory" | "bonus";
-  source: string;                   // 出自赛题哪一条
+  source: string;                   // 出自赛题哪一条（原文引用）
   verification_method: "measurement" | "demonstration" | "inspection" | "analysis";
+  status?: ReqStatus;               // 需求确认工作流：AI 提取 → 人工确认/驳回
+  confirmed_at?: string;
 }
 
 // ---------- 方案对象 ----------
