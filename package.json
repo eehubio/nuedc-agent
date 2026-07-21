@@ -1,0 +1,27 @@
+{
+  "name": "nuedc-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NUEDC Agent — 电赛智能体：赛题理解 / 题目预测 / 模块数据库 / 方案生成 / BOM / 代码生成 / LabSight 调试 / 报告生成。可嵌入 ezPLM，也可独立部署到 Vercel。",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "db:init": "tsx scripts/init-db.mts",
+    "db:seed": "tsx scripts/seed.mts"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.8.1",
+    "next": "^14.2.33",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

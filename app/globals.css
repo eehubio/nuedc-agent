@@ -1,0 +1,234 @@
+/* ============================================================
+   NUEDC Agent — 视觉体系「实验室仪器面板」
+   色板: ink #17222E / panel #FFFFFF / bg #EFF2F4 / line #DCE3E8
+        signal-green #0FA36B (示波器迹线, 唯一强调色)
+        amber #B57700 (warning) / red #BE3D2E (blocker)
+   字体: 数据读出与状态用等宽 (ui-monospace), 界面用系统 sans
+   签名: 顶部项目状态机做成仪器刻度条
+   ============================================================ */
+
+:root {
+  --ink: #17222e;
+  --muted: #5d6e7e;
+  --faint: #8fa0ae;
+  --bg: #eff2f4;
+  --panel: #ffffff;
+  --line: #dce3e8;
+  --line-strong: #b9c5cd;
+  --signal: #0fa36b;
+  --signal-dim: #e2f4ec;
+  --signal-ink: #0a7a50;
+  --amber: #b57700;
+  --amber-dim: #fbf1dd;
+  --red: #be3d2e;
+  --red-dim: #fae7e4;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+  --sans: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; }
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+/* ---------- 应用框架 ---------- */
+.app { display: flex; flex-direction: column; height: 100vh; }
+.app.embed { height: 100vh; }
+
+.masthead {
+  display: flex; align-items: center; gap: 16px;
+  padding: 10px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.masthead .brand {
+  font-family: var(--mono);
+  font-size: 15px; font-weight: 700; letter-spacing: 0.04em;
+}
+.masthead .brand .dot { color: var(--signal); }
+.masthead .sub { color: var(--muted); font-size: 12px; }
+.masthead select, .masthead button.new-proj {
+  font: inherit; font-size: 13px;
+  border: 1px solid var(--line-strong); border-radius: 6px;
+  background: var(--panel); color: var(--ink);
+  padding: 5px 10px;
+}
+
+/* ---------- 签名元素: 状态机刻度条 ---------- */
+.stagebar {
+  display: flex; align-items: stretch;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  padding: 0 20px;
+  overflow-x: auto;
+}
+.stagebar .tick {
+  position: relative;
+  flex: 1; min-width: 68px;
+  padding: 8px 4px 10px;
+  text-align: center;
+  cursor: pointer;
+  border: 0; background: none;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.02em;
+  color: var(--faint);
+}
+.stagebar .tick::before {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0;
+  height: 3px; background: var(--line);
+}
+.stagebar .tick.done { color: var(--muted); }
+.stagebar .tick.done::before { background: var(--signal); opacity: 0.35; }
+.stagebar .tick.current { color: var(--signal-ink); font-weight: 700; }
+.stagebar .tick.current::before { background: var(--signal); }
+.stagebar .tick.current::after {
+  content: ""; position: absolute; left: 50%; bottom: 2px; transform: translateX(-50%);
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--signal);
+  box-shadow: 0 0 0 3px var(--signal-dim);
+}
+
+/* ---------- 主体: 页签 + 面板 ---------- */
+.main { display: flex; flex: 1; min-height: 0; }
+.tabs {
+  width: 148px; flex-shrink: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  padding: 12px 0;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.tabs button {
+  display: flex; align-items: baseline; gap: 8px;
+  border: 0; background: none; text-align: left;
+  padding: 9px 16px;
+  font: inherit; font-size: 13px; color: var(--muted);
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.tabs button .k { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+.tabs button:hover { color: var(--ink); background: var(--bg); }
+.tabs button.active {
+  color: var(--ink); font-weight: 600;
+  border-left-color: var(--signal);
+  background: var(--signal-dim);
+}
+.tabs button.active .k { color: var(--signal-ink); }
+
+.content { flex: 1; min-width: 0; overflow-y: auto; padding: 20px 24px; }
+.content h2 { font-size: 16px; margin: 0 0 4px; }
+.content .lede { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+
+/* ---------- 卡片与表格 ---------- */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+.card h3 { margin: 0 0 8px; font-size: 14px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } .tabs { width: 110px; } }
+
+textarea, input[type="text"] {
+  width: 100%; font: inherit; font-size: 13px;
+  border: 1px solid var(--line-strong); border-radius: 6px;
+  padding: 8px 10px; background: #fff; color: var(--ink);
+  resize: vertical;
+}
+textarea:focus, input:focus, button:focus-visible, select:focus {
+  outline: 2px solid var(--signal); outline-offset: 1px;
+}
+textarea.mono { font-family: var(--mono); font-size: 12px; }
+
+.btn {
+  font: inherit; font-size: 13px; font-weight: 600;
+  border: 1px solid var(--signal-ink);
+  background: var(--signal); color: #fff;
+  border-radius: 6px; padding: 7px 16px; cursor: pointer;
+}
+.btn:hover { background: var(--signal-ink); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn.ghost { background: var(--panel); color: var(--signal-ink); }
+.btn.ghost:hover { background: var(--signal-dim); }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
+
+table.data { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.data th {
+  text-align: left; font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.04em; color: var(--muted);
+  border-bottom: 1px solid var(--line-strong); padding: 6px 8px;
+}
+table.data td { border-bottom: 1px solid var(--line); padding: 6px 8px; vertical-align: top; }
+table.data tr:hover td { background: var(--bg); }
+
+/* ---------- 读出与徽标 ---------- */
+.readout { font-family: var(--mono); font-size: 12px; }
+.badge {
+  display: inline-block; font-family: var(--mono); font-size: 10px;
+  padding: 1px 7px; border-radius: 4px; letter-spacing: 0.03em;
+  background: var(--bg); color: var(--muted); border: 1px solid var(--line);
+}
+.badge.ok { background: var(--signal-dim); color: var(--signal-ink); border-color: transparent; }
+.badge.warn { background: var(--amber-dim); color: var(--amber); border-color: transparent; }
+.badge.err { background: var(--red-dim); color: var(--red); border-color: transparent; }
+
+pre.json {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  background: #f6f8f9; border: 1px solid var(--line);
+  border-radius: 6px; padding: 12px; overflow-x: auto;
+  max-height: 420px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-word;
+}
+.report-md {
+  font-size: 13.5px; line-height: 1.8;
+  white-space: pre-wrap;
+  background: #fff; border: 1px solid var(--line); border-radius: 8px;
+  padding: 24px; max-height: 560px; overflow-y: auto;
+}
+
+/* ---------- 智能体面板 ---------- */
+.agent-panel {
+  width: 340px; flex-shrink: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  display: flex; flex-direction: column;
+}
+@media (max-width: 1100px) { .agent-panel { display: none; } }
+.agent-panel .head {
+  padding: 10px 14px; border-bottom: 1px solid var(--line);
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.agent-panel .head .live { color: var(--signal-ink); }
+.agent-panel .log { flex: 1; overflow-y: auto; padding: 12px 14px; }
+.agent-panel .msg { margin-bottom: 12px; }
+.agent-panel .msg .who {
+  font-family: var(--mono); font-size: 10px; color: var(--faint); margin-bottom: 2px;
+}
+.agent-panel .msg .body {
+  font-size: 12.5px;
+  background: var(--bg); border-radius: 6px; padding: 8px 10px;
+  white-space: pre-wrap; word-break: break-word;
+}
+.agent-panel .msg.user .body { background: var(--signal-dim); }
+.agent-panel .input { border-top: 1px solid var(--line); padding: 10px 14px; display: flex; gap: 8px; }
+.agent-panel .input textarea { flex: 1; min-height: 40px; max-height: 120px; }
+
+.spinner {
+  display: inline-block; width: 12px; height: 12px;
+  border: 2px solid var(--signal-dim); border-top-color: var(--signal);
+  border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.5s; } }
+
+.hint { color: var(--faint); font-size: 12px; }
+.empty {
+  text-align: center; color: var(--faint); padding: 32px 16px; font-size: 13px;
+  border: 1px dashed var(--line-strong); border-radius: 8px;
+}

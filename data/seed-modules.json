@@ -1,0 +1,121 @@
+[
+  {
+    "id": "mcu-mspm0g3507-lp",
+    "name": "MSPM0G3507 LaunchPad 开发板",
+    "category": "mcu.ti_mspm0",
+    "version": "1.0.0",
+    "main_chip": "MSPM0G3507",
+    "description": "TI 官方 LaunchPad，Cortex-M0+ 80MHz，电赛官方指定主控。板载 XDS110 调试器。",
+    "principle": "Cortex-M0+ 内核，含 12bit 4Msps ADC、DAC、OPA、比较器，适合信号链类题目。",
+    "interfaces": [
+      { "name": "UART0", "interface_type": "UART", "role": "peer", "voltage_level": 3.3, "five_v_tolerant": false, "max_baudrate": 3000000, "pins": [{ "signal": "TX", "pin": "PA10" }, { "signal": "RX", "pin": "PA11" }], "constraints": ["not_5v_tolerant"] },
+      { "name": "I2C0", "interface_type": "I2C", "role": "host", "voltage_level": 3.3, "pins": [{ "signal": "SDA", "pin": "PA0" }, { "signal": "SCL", "pin": "PA1" }], "constraints": [] },
+      { "name": "SPI0", "interface_type": "SPI", "role": "host", "voltage_level": 3.3, "pins": [], "constraints": [] },
+      { "name": "ADC0", "interface_type": "ADC", "role": "host", "voltage_level": 3.3, "pins": [], "constraints": ["输入不得超过 VREF"] }
+    ],
+    "power": { "input_voltage_range": [5, 5], "recommended_voltage": 5, "typical_current_ma": 60, "peak_current_ma": 120, "has_onboard_regulator": true },
+    "datasheet_url": "https://www.ti.com/product/MSPM0G3507",
+    "code_repositories": ["https://github.com/TexasInstruments/mspm0-sdk"],
+    "usage_notes": ["SysConfig 配置引脚复用，注意 Timer 与 PWM 通道映射", "GPIO 非 5V 容忍，接 5V 外设必须电平转换"],
+    "known_issues": ["部分批次 XDS110 固件需升级后才能在 CCS 12 下识别"],
+    "competition_cases": [{ "year": 2024, "problem": "H题", "note": "官方指定主控" }],
+    "certification_status": "COMPETITION_READY",
+    "source_snapshot": { "source": "official" },
+    "price": 69,
+    "tags": ["主控", "TI", "官方器件"]
+  },
+  {
+    "id": "vision-k230-canmv",
+    "name": "嘉楠 K230 CanMV 视觉模块",
+    "category": "vision.ai_camera",
+    "version": "1.1.0",
+    "main_chip": "K230",
+    "description": "RISC-V 双核 AI 视觉模块，支持 YOLO 部署与 CanMV(MicroPython)，可做循迹/二维码/目标识别。",
+    "interfaces": [
+      { "name": "UART1", "interface_type": "UART", "role": "peer", "voltage_level": 3.3, "five_v_tolerant": false, "max_baudrate": 3000000, "pins": [{ "signal": "TX", "pin": "P3" }, { "signal": "RX", "pin": "P4" }], "constraints": ["not_5v_tolerant"] },
+      { "name": "CSI0", "interface_type": "CSI", "role": "host", "pins": [], "constraints": [] }
+    ],
+    "power": { "input_voltage_range": [4.6, 5.5], "recommended_voltage": 5, "typical_current_ma": 450, "peak_current_ma": 900 },
+    "code_repositories": ["https://github.com/kendryte/canmv_k230"],
+    "usage_notes": ["峰值电流接近 1A，禁止与电机共用小电流 5V 轨", "识别帧率与分辨率需权衡，赛场光照要现场标定"],
+    "known_issues": ["部分固件版本 UART DMA 大包发送丢字节，建议分包"],
+    "compatibility": ["vision-openmv-h7"],
+    "competition_cases": [{ "year": 2025, "problem": "视觉类", "note": "官方器件清单新增" }],
+    "certification_status": "FUNCTION_TESTED",
+    "source_snapshot": { "source": "official" },
+    "price": 399,
+    "tags": ["视觉", "AI", "摄像头"]
+  },
+  {
+    "id": "motor-tb6612-dual",
+    "name": "TB6612FNG 双路直流电机驱动模块",
+    "category": "actuator.motor_driver",
+    "version": "2.1.0",
+    "main_chip": "TB6612FNG",
+    "description": "双路 1.2A（峰值 3.2A）直流电机驱动，替代 L298N 的低压差方案。",
+    "interfaces": [
+      { "name": "PWMA", "interface_type": "PWM", "role": "device", "voltage_level": 3.3, "five_v_tolerant": true, "pins": [{ "signal": "PWMA", "pin": "PWMA" }], "constraints": ["PWM ≤ 100kHz"] },
+      { "name": "AIN", "interface_type": "GPIO", "role": "device", "voltage_level": 3.3, "five_v_tolerant": true, "pins": [{ "signal": "AIN1", "pin": "AIN1" }, { "signal": "AIN2", "pin": "AIN2" }], "constraints": [] }
+    ],
+    "power": { "input_voltage_range": [4.5, 13.5], "typical_current_ma": 1200, "peak_current_ma": 3200, "has_onboard_regulator": false },
+    "usage_notes": ["VM（电机电源）与 VCC（逻辑电源）必须分开供电", "STBY 引脚需拉高才工作，最常见的\"不转\"原因"],
+    "known_issues": ["淘宝部分板卡丝印 AIN/BIN 标反，先万用表确认"],
+    "competition_cases": [{ "year": 2023, "problem": "小车类", "note": "循迹小车标准配置" }],
+    "certification_status": "COMPETITION_READY",
+    "source_snapshot": { "source": "taobao", "seller": "示例店铺", "claimed_chip": "TB6612FNG", "identified_chip": "TB6612FNG" },
+    "price": 8.5,
+    "tags": ["电机驱动", "小车"]
+  },
+  {
+    "id": "imu-mpu6050",
+    "name": "MPU6050 六轴姿态模块 (GY-521)",
+    "category": "sensor.imu",
+    "version": "1.0.0",
+    "main_chip": "MPU6050",
+    "description": "三轴加速度 + 三轴陀螺仪，I2C 接口，姿态解算入门标配。",
+    "interfaces": [
+      { "name": "I2C", "interface_type": "I2C", "role": "device", "voltage_level": 3.3, "address": "0x68", "pins": [{ "signal": "SDA", "pin": "SDA" }, { "signal": "SCL", "pin": "SCL" }], "constraints": ["AD0 拉高时地址变 0x69"] }
+    ],
+    "power": { "input_voltage_range": [3, 5], "typical_current_ma": 4 },
+    "usage_notes": ["上电需等待 100ms 再初始化", "解算建议 Mahony/Kalman，纯积分漂移大"],
+    "known_issues": ["部分淘宝板为翻新片，零偏温漂大，赛前逐块标定"],
+    "compatibility": ["imu-bno085"],
+    "certification_status": "FUNCTION_TESTED",
+    "source_snapshot": { "source": "taobao" },
+    "price": 6,
+    "tags": ["IMU", "姿态"]
+  },
+  {
+    "id": "power-tps5430-buck",
+    "name": "TPS5430 降压电源模块 (5V/3A)",
+    "category": "power.buck",
+    "version": "1.0.0",
+    "main_chip": "TPS5430",
+    "description": "输入 5.5-36V，输出可调，3A 连续。给主控/视觉供电的常用前级。",
+    "interfaces": [],
+    "power": { "input_voltage_range": [5.5, 36], "recommended_voltage": 12, "can_source_power": true, "output_capability_ma": 3000, "has_onboard_regulator": true },
+    "usage_notes": ["输出给 K230 等大电流负载时，反馈电阻按需调压并留 20% 裕量", "输入电容离芯片近，否则电机同源时纹波大"],
+    "certification_status": "BENCHMARKED",
+    "source_snapshot": { "source": "lab", "uploader": "实验室示例", "school": "示例大学" },
+    "price": 12,
+    "tags": ["电源", "Buck"]
+  },
+  {
+    "id": "wireless-nrf24l01",
+    "name": "nRF24L01+ 2.4G 无线模块",
+    "category": "comm.wireless_2g4",
+    "version": "1.0.0",
+    "main_chip": "nRF24L01+",
+    "description": "2.4GHz SPI 无线收发，双机通信/遥控常用。",
+    "interfaces": [
+      { "name": "SPI", "interface_type": "SPI", "role": "device", "voltage_level": 3.3, "five_v_tolerant": false, "pins": [{ "signal": "MOSI", "pin": "MOSI" }, { "signal": "MISO", "pin": "MISO" }, { "signal": "SCK", "pin": "SCK" }, { "signal": "CSN", "pin": "CSN" }, { "signal": "CE", "pin": "CE" }], "constraints": ["not_5v_tolerant", "SPI ≤ 10MHz"] }
+    ],
+    "power": { "input_voltage_range": [1.9, 3.6], "typical_current_ma": 14, "peak_current_ma": 115 },
+    "usage_notes": ["电源脚并 10uF+0.1uF，否则丢包", "IRQ 可不接但建议接，轮询浪费时间片"],
+    "known_issues": ["山寨片与原厂片混发，通信距离差异大，赛前拉距离测试"],
+    "certification_status": "FUNCTION_TESTED",
+    "source_snapshot": { "source": "taobao" },
+    "price": 5,
+    "tags": ["无线", "2.4G"]
+  }
+]

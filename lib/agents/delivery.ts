@@ -1,0 +1,161 @@
+// 交付类 Agent：代码生成、LabSight 调试、报告生成 + 总控编排
+import { llmComplete, llmJson } from "../llm";
+import { registerAgent, loadModuleIndex } from "./base";
+import type { SolutionProposal } from "../types";
+
+// ============ Agent 11：代码生成（Code Generation）============
+// 模块级生成，不一次性生成整个工程；未验证代码不得标记"可用"
+registerAgent("code_generator", async (input, ctx) => {
+  const solution: SolutionProposal | undefined = input.solution;
+  const target: string = input.target_module || "";
+  if (!solution && !target) return { ok: false, output: null, message: "请提供 solution 或 target_module（要生成哪个模块的代码）" };
+
+  const index = await loadModuleIndex();
+  const relatedModules = (solution?.blocks || [])
+    .map((b) => (b.module_id ? index[b.module_id] : null))
+    .filter(Boolean);
+
+  const out = await llmJson<{
+    plan: { layer: string; files: string[] }[];
+    files: { path: string; language: string; content: string; notes: string }[];
+    integration_notes: string[];
+    unsupported_items: string[];
+  }>({
+    system: `你是电赛嵌入式代码生成专家。规则：
+1. 模块级生成：一次只生成一个功能模块的驱动/服务层代码（如 UART 协议、PID、传感器驱动），不生成整个工程
+2. 遵循分层结构 firmware/{bsp,drivers,middleware,algorithms,services,app,config}
+3. 代码含中文注释、引脚映射来自方案 connections、协议帧格式明确定义
+4. 依赖但无法确认的 SDK 函数放入 unsupported_items，禁止编造 API
+5. 输出的每个文件在 notes 里写明"需要人工验证的点"
+目标芯片/工具链：${input.toolchain || "MSPM0G3507 + TI SysConfig/CCS（默认）"}`,
+    messages: [
+      {
+        role: "user",
+        content: `要生成的模块：${target || "（按方案顺序生成第一个未完成模块）"}
+方案上下文：${JSON.stringify(solution || {}).slice(0, 6000)}
+相关模块库资料：${JSON.stringify(relatedModules.map((m: any) => ({ id: m.id, name: m.name, interfaces: m.interfaces, code_repositories: m.code_repositories }))).slice(0, 4000)}
+补充要求：${input.notes || "无"}`,
+      },
+    ],
+    maxTokens: 8192,
+  });
+
+  return {
+    ok: true,
+    artifact_type: "code_bundle",
+    output: { ...out, verification_status: "GENERATED" }, // 状态机：GENERATED → COMPILED → HIL_TESTED
+    human_review_required: true,
+    message: `已生成 ${out.files?.length ?? 0} 个文件（状态 GENERATED，编译通过前不得标记为可用）`,
+  };
+});
+
+// ============ Agent 13：LabSight 调试（Debug Agent）============
+// 输入：现象描述 + 可选 PCB 照片（base64）+ 串口日志；输出：故障树 + 下一步测量动作
+registerAgent("labsight_debug", async (input) => {
+  const symptom: string = input.symptom || "";
+  if (!symptom) return { ok: false, output: null, message: "请描述故障现象 symptom" };
+
+  const images = (input.images || []) as { media_type: string; data_base64: string }[];
+
+  const out = await llmJson<{
+    symptom: string;
+    observations: string[];
+    hypotheses: { cause: string; confidence: number; evidence: string[] }[];
+    next_actions: { instrument: string; probe_point: string; expect: string; note: string }[];
+    safety_warnings: string[];
+  }>({
+    system: `你是电赛实验室调试专家（LabSight Debug Agent）。规则：
+1. 建立故障树：按置信度排序的假设列表，每个假设附证据
+2. next_actions 给出具体测量动作：用什么仪器、测哪个点、预期看到什么
+3. 如提供了 PCB 照片，先做目视检查：器件方向、焊接、短路、飞线
+4. 涉及市电/高压/大功率时必须输出 safety_warnings，禁止指导徒手测量带电高压
+5. 常见套路要覆盖：电源跌落复位、UART 波特率/晶振、PWM 未输出（Timer/复用/时钟）、I2C 无应答（地址/上拉/电平）
+6. 这是循环调试：基于新测量结果更新假设，不是一次性问答`,
+    messages: [
+      {
+        role: "user",
+        content: `故障现象：${symptom}
+串口日志/测量数据：${(input.logs || "无").slice(0, 4000)}
+系统上下文：${JSON.stringify(input.context || {}).slice(0, 3000)}
+历史调试记录：${JSON.stringify(input.history || []).slice(0, 3000)}`,
+        images: images.length ? images : undefined,
+      },
+    ],
+    maxTokens: 3072,
+  });
+
+  return { ok: true, artifact_type: "debug_session", output: out };
+});
+
+// ============ Agent 15：报告生成（Report Composer）============
+// 从项目真实数据生成，按电赛设计报告规范章节；数据缺失如实标注，不虚构
+registerAgent("report_composer", async (input) => {
+  const { requirements, solution, bom, test_results, debug_notes, team } = input;
+  if (!solution) return { ok: false, output: null, message: "缺少最终方案 solution（报告必须基于已确认方案生成）" };
+
+  const md = await llmComplete({
+    system: `你是电赛设计报告撰写专家。按全国大学生电子设计竞赛设计报告规范生成 Markdown 报告，章节：
+摘要（含关键词）/ 1 方案论证与比较 / 2 系统总体设计（含系统框图，用 mermaid 描述）/ 3 理论分析与参数计算 / 4 电路与程序设计 / 5 测试方案与测试结果 / 6 结论 / 附录（元器件清单、程序清单说明）
+硬规则：
+1. 所有具体数据（型号、电压、采样率、测试结果）只能来自输入的项目数据，禁止编造
+2. 缺失的数据写 "【待补充：xxx】"占位，不得虚构测试数值
+3. 方案论证部分必须对比输入中的候选方案并说明选择理由
+4. 测试结果以表格呈现，并与需求指标（REQ）逐条对照
+5. 语言规范、工程化，符合评审口味；篇幅控制在正文 6000 字以内`,
+    messages: [
+      {
+        role: "user",
+        content: `项目数据：
+【结构化需求】${JSON.stringify(requirements || {}).slice(0, 5000)}
+【最终方案】${JSON.stringify(solution).slice(0, 6000)}
+【BOM】${JSON.stringify(bom || {}).slice(0, 3000)}
+【测试结果】${JSON.stringify(test_results || "（暂无，请占位）").slice(0, 3000)}
+【调试记录摘要】${JSON.stringify(debug_notes || []).slice(0, 2000)}
+【队伍信息】${JSON.stringify(team || {})}`,
+      },
+    ],
+    maxTokens: 8192,
+    temperature: 0.4,
+  });
+
+  // 一致性检查：报告中出现的 MCU/关键器件必须在方案里存在
+  const consistency: string[] = [];
+  const solutionText = JSON.stringify(solution);
+  for (const mpn of md.match(/[A-Z]{2,}[0-9]{2,}[A-Z0-9]*/g) || []) {
+    if (mpn.length >= 6 && !solutionText.includes(mpn) && !JSON.stringify(bom || {}).includes(mpn)) {
+      consistency.push(`报告提到 ${mpn}，但方案与 BOM 中均未找到，请核实`);
+    }
+  }
+
+  return {
+    ok: true,
+    artifact_type: "report",
+    output: { markdown: md, consistency_issues: [...new Set(consistency)].slice(0, 10) },
+    human_review_required: consistency.length > 0,
+  };
+});
+
+// ============ Agent 1：总控编排（Orchestrator）============
+// 判断用户意图 → 生成工作流（要调哪些 Agent、什么顺序、哪里需要人工确认）
+registerAgent("orchestrator", async (input, ctx) => {
+  const out = await llmJson<{
+    intent: string;
+    reply: string;
+    tasks: { agent: string; task: string; depends_on: string[] }[];
+    required_approvals: string[];
+  }>({
+    system: `你是电赛智能体的总控编排器。可调度的 Agent：
+problem_interpreter(赛题理解) topic_forecast(题目预测) module_knowledge(模块推荐)
+solution_architect(方案生成) integration_checker(接口检查) bom_agent(BOM整理)
+procurement_planner(备料规划) code_generator(代码生成) labsight_debug(调试) report_composer(报告)
+规则：
+1. 判断用户处于备赛/解题/设计/开发/调试/写报告哪个阶段
+2. 生成任务列表（含依赖关系），不自己编造工程细节
+3. 关键节点标注 required_approvals：候选方案必须人工确认；接口检查不过禁止代码生成；未测试不得在报告写"达到指标"
+4. 项目当前阶段：${ctx.stage}；该阶段允许的操作要与状态机一致
+5. reply 用中文对用户说明接下来会做什么`,
+    messages: [{ role: "user", content: String(input.user_request || input.objective || "") }],
+    maxTokens: 2048,
+  });
+  return { ok: true, output: out };
+});
