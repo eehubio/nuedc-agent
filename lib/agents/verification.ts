@@ -110,8 +110,8 @@ registerAgent("code_verifier", async (input) => {
       verification_status: status,
       issues: all,
       files_checked: files.length,
-      honest_note: "SYNTAX_CHECKED 仅代表通过静态结构校验。COMPILED 及以上状态需真实工具链：本地或 CI 中运行编译后，调用本接口带 external_status 回写（如 GitHub Actions 使用 arm-none-eabi-gcc / TI CCS CLI）。未达 COMPILED 的代码一律不得视为可用。",
-      ...(input.external_status && ["COMPILED", "UNIT_TESTED", "HIL_TESTED", "FIELD_VERIFIED"].includes(input.external_status)
+      honest_note: "状态阶梯：SYNTAX_CHECKED=静态结构校验；SOURCE_COMPILED=真实 gcc 逐文件编译通过；MINIMAL_LINKED=最小链接产出 ELF（非厂商工程）；SDK_BUILD_PASSED 及以上需完整厂商 SDK 构建镜像（docker/）。绿色的 MINIMAL_LINKED 不等于可烧录的正式工程构建。",
+      ...(input.external_status && ["SOURCE_COMPILED", "MINIMAL_LINKED", "SDK_BUILD_PASSED", "FIRMWARE_GENERATED", "HIL_TESTED", "FIELD_VERIFIED"].includes(input.external_status)
         ? { verification_status: errors.length ? status : input.external_status, external_evidence: input.external_evidence || null }
         : {}),
     },

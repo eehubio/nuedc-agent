@@ -190,3 +190,53 @@ describe("官方分值 vs 估算分值", () => {
     expect(summary.score_basis).toBe("estimated");
   });
 });
+
+describe("产物依赖图（精确失效）", () => {
+  it("方案的下游含代码与报告，不含需求", async () => {
+    const { downstreamOf } = await import("../lib/artifact-graph");
+    const d = downstreamOf("solution");
+    expect(d).toContain("code_bundle");
+    expect(d).toContain("report");
+    expect(d).not.toContain("requirements");
+  });
+  it("接口检查变更只影响代码及之后，不影响 BOM", async () => {
+    const { downstreamOf } = await import("../lib/artifact-graph");
+    const d = downstreamOf("integration_report");
+    expect(d).toContain("code_bundle");
+    expect(d).not.toContain("bom");
+  });
+  it("需求变更传递到全链", async () => {
+    const { downstreamOf } = await import("../lib/artifact-graph");
+    expect(downstreamOf("requirements")).toEqual(expect.arrayContaining(["solution", "bom", "code_bundle", "report", "test_record"]));
+  });
+});
+
+describe("内容哈希", () => {
+  it("相同内容同哈希，不同内容不同哈希，键序不敏感需一致输入", async () => {
+    const { contentHash } = await import("../lib/artifacts");
+    expect(contentHash({ a: 1 })).toBe(contentHash({ a: 1 }));
+    expect(contentHash({ a: 1 })).not.toBe(contentHash({ a: 2 }));
+  });
+});
+
+describe("权限矩阵（canAccessProject）", () => {
+  it("admin 全通；所有者通；成员通；陌生人拒", async () => {
+    const { canAccessProject } = await import("../lib/auth");
+    expect(canAccessProject("admin", "u1", "u9", false)).toBe(true);
+    expect(canAccessProject("free", "u1", "u1", false)).toBe(true);
+    expect(canAccessProject("paid", "u1", "u2", true)).toBe(true);
+    expect(canAccessProject("paid", "u1", "u2", false)).toBe(false);
+    expect(canAccessProject("lab", "u1", "u2", false)).toBe(false);
+  });
+});
+
+describe("编译输入护栏", () => {
+  it("路径逃逸/绝对路径/非法扩展名/超量被拒，正常工程放行", async () => {
+    const { validateBuildFiles } = await import("../lib/build-limits");
+    expect(validateBuildFiles([{ path: "../x.c", content: "" }])).toBeTruthy();
+    expect(validateBuildFiles([{ path: "/etc/x.c", content: "" }])).toBeTruthy();
+    expect(validateBuildFiles([{ path: "run.sh", content: "" }])).toBeTruthy();
+    expect(validateBuildFiles(Array.from({ length: 41 }, (_, i) => ({ path: `f${i}.c`, content: "" })))).toBeTruthy();
+    expect(validateBuildFiles([{ path: "src/main.c", content: "int main(){return 0;}" }])).toBeNull();
+  });
+});

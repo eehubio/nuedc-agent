@@ -91,6 +91,43 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project ON agent_tasks(project_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idem ON agent_tasks(idempotency_key) WHERE idempotency_key IS NOT NULL;
 `,
   },
+  {
+    id: 7,
+    name: "artifact_provenance_snapshots_members_task_policy",
+    sql: `
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS source_artifact_ids TEXT;
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS schema_version INTEGER DEFAULT 1;
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS change_reason TEXT;
+CREATE TABLE IF NOT EXISTS artifact_dependencies (
+  id BIGSERIAL PRIMARY KEY,
+  project_id TEXT,
+  artifact_id TEXT NOT NULL,
+  source_artifact_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_deps_artifact ON artifact_dependencies(artifact_id);
+CREATE INDEX IF NOT EXISTS idx_deps_source ON artifact_dependencies(source_artifact_id);
+CREATE TABLE IF NOT EXISTS project_snapshots (
+  snapshot_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  name TEXT,
+  manifest TEXT NOT NULL,
+  created_by TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_project ON project_snapshots(project_id);
+CREATE TABLE IF NOT EXISTS project_members (
+  project_id TEXT NOT NULL,
+  user_ref TEXT NOT NULL,
+  role TEXT DEFAULT 'member',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (project_id, user_ref)
+);
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 5;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS max_attempts INTEGER DEFAULT 3;
+`,
+  },
 ];
 
 let applied = false;

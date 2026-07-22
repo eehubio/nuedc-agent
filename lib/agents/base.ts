@@ -56,9 +56,23 @@ export async function runAgent(
     // Artifact 落库：版本递增 + 方案变更自动级联失效下游
     if (result.ok && result.artifact_type) {
       const { saveArtifact } = await import("../artifacts");
+      const { AGENT_CONSUMES } = await import("../artifact-graph");
+      // 实例级溯源：查本 Agent 消费的上游类型当前最新版本 id
+      let sourceIds: string[] = [];
+      if (ctx.projectId && AGENT_CONSUMES[type]?.length) {
+        const placeholders = AGENT_CONSUMES[type].map(() => "?").join(",");
+        const rs = await db().execute({
+          sql: `SELECT a.artifact_id FROM artifacts a
+                JOIN (SELECT type, MAX(version) v FROM artifacts WHERE project_id=? AND type IN (${placeholders}) GROUP BY type) m
+                ON a.type=m.type AND a.version=m.v WHERE a.project_id=?`,
+          args: [ctx.projectId, ...AGENT_CONSUMES[type], ctx.projectId],
+        });
+        sourceIds = rs.rows.map((r) => String(r.artifact_id));
+      }
       await saveArtifact({
         projectId: ctx.projectId, type: result.artifact_type, content: result.output,
         createdBy: type, status: result.human_review_required ? "draft" : "reviewed",
+        sourceArtifactIds: sourceIds, changeReason: `run:${type}`,
       });
     }
     return { ...result, run_id: runId };

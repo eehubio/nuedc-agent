@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { PREP_TASKS, KNOWLEDGE_POINTS, TYPICAL_DIRECTIONS, FEATURES, COMPETITION_DATE, COMPETITION_NAME } from "../data/prep-content";
 import { CATEGORY_TREE, CAT_ICON, categoryLabel } from "../data/categories";
 import { STAGES, STAGE_LABEL } from "./Platform";
@@ -247,6 +247,34 @@ function ArtifactHistory({ projectId, onRestored }: { projectId: string; onResto
   );
 }
 
+function SnapshotBar({ projectId }: { projectId: string }) {
+  const [snaps, setSnaps] = useState<any[]>([]);
+  const [msg, setMsg] = useState("");
+  const load = useCallback(() => fetch(`/api/projects/${projectId}/snapshots`).then((r) => r.json()).then((d) => setSnaps(d.snapshots || [])), [projectId]);
+  useEffect(() => { load(); }, [load]);
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button className="btn ghost sm" onClick={async () => {
+          const r = await fetch(`/api/projects/${projectId}/snapshots`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then((x) => x.json());
+          setMsg(r.snapshot_id ? `已创建快照（${r.types.length} 类产物）` : r.error); load();
+        }}>📸 创建快照</button>
+        {snaps.map((s) => (
+          <span key={s.snapshot_id} className="chip" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+            {s.name}
+            <button style={{ border: 0, background: "#fff", borderRadius: 5, padding: "0 6px", cursor: "pointer", fontSize: 11 }}
+              onClick={async () => {
+                const r = await fetch(`/api/projects/${projectId}/snapshots/${s.snapshot_id}/restore`, { method: "POST" }).then((x) => x.json());
+                setMsg(r.restored ? `已整套恢复 ${Object.keys(r.restored).length} 类产物到该时点` : r.error);
+              }}>恢复整套</button>
+          </span>
+        ))}
+      </div>
+      {msg && <p className="hint" style={{ margin: "4px 0 0" }}>{msg}</p>}
+    </div>
+  );
+}
+
 export function ProjectsPage({ ctx }: { ctx: any }) {
   const [historyOf, setHistoryOf] = useState<string | null>(null);
   return (
@@ -263,6 +291,7 @@ export function ProjectsPage({ ctx }: { ctx: any }) {
             <div className="hint" style={{ display: "flex", justifyContent: "space-between" }}>
               <span>备赛</span><span>方案</span><span>开发</span><span>测试</span><span>提交</span>
             </div>
+            <SnapshotBar projectId={p.project_id} />
             {historyOf === p.project_id && <ArtifactHistory projectId={p.project_id} onRestored={() => { if (ctx.projectId === p.project_id) ctx.setProjectId(p.project_id); }} />}
           </div>
         );

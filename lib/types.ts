@@ -42,7 +42,10 @@ export const STAGE_ALLOWED_AGENTS: Record<ProjectStage, AgentType[]> = {
 };
 
 // ---------- Agent 类型 ----------
-export const CODE_VERIFY_STATES = ["GENERATED", "SYNTAX_CHECKED", "COMPILED", "UNIT_TESTED", "HIL_TESTED", "FIELD_VERIFIED"] as const;
+export const CODE_VERIFY_STATES = ["GENERATED", "SYNTAX_CHECKED", "SOURCE_COMPILED", "MINIMAL_LINKED", "SDK_BUILD_PASSED", "FIRMWARE_GENERATED", "HIL_TESTED", "FIELD_VERIFIED"] as const;
+// SOURCE_COMPILED：真实 gcc 逐文件编译通过（语法/类型级）
+// MINIMAL_LINKED：最小链接脚本+启动桩链接出 ELF（非厂商工程）
+// SDK_BUILD_PASSED / FIRMWARE_GENERATED：完整厂商 SDK 工程构建（需 SDK 构建镜像，见 docker/）
 export type CodeVerifyState = (typeof CODE_VERIFY_STATES)[number];
 
 export const AGENT_TYPES = [

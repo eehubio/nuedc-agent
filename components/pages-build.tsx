@@ -279,11 +279,12 @@ export function CodePage({ ctx }: { ctx: any }) {
       const j = await fetch(`/api/build-jobs/${r.job_id}`).then((x) => x.json()).catch(() => null);
       if (j?.status && !["queued", "running"].includes(j.status)) {
         setBuildJob(j);
-        if (j.status === "success") {
+        if (["MINIMAL_LINKED", "SOURCE_COMPILED"].includes(j.status)) {
           await ctx.runVerify?.();   // 静态验证在前
           await fetch("/api/agent", { method: "POST", headers: { "content-type": "application/json" },
             body: JSON.stringify({ agent: "code_verifier", project_id: ctx.projectId,
-              input: { files: ctx.codeBundle.files, external_status: "COMPILED", external_evidence: `build_job:${j.job_id} flash=${j.flash_bytes}B ram=${j.ram_bytes}B` } }) });
+              input: { files: ctx.codeBundle.files, external_status: j.status,
+                external_evidence: `build_job:${j.job_id}${j.flash_bytes != null ? ` flash=${j.flash_bytes}B ram=${j.ram_bytes}B` : ""}` } }) });
         }
         break;
       }
@@ -341,11 +342,11 @@ export function CodePage({ ctx }: { ctx: any }) {
             <div className="issue info" style={{ marginTop: 10, display: "block" }}>
               验证状态：<b>{b.verification_status}</b>
               <div style={{ display: "flex", gap: 3, margin: "6px 0" }}>
-                {["GENERATED", "SYNTAX_CHECKED", "COMPILED", "UNIT_TESTED", "HIL_TESTED"].map((st) => (
+                {["GENERATED", "SYNTAX_CHECKED", "SOURCE_COMPILED", "MINIMAL_LINKED", "SDK_BUILD_PASSED", "HIL_TESTED"].map((st) => (
                   <span key={st} className={"chip" + (b.verification_status === st ? " green" : "")} style={{ fontSize: 10 }}>{st}</span>
                 ))}
               </div>
-              未达 COMPILED 的代码一律不得视为可用。
+              MINIMAL_LINKED=最小链接出 ELF，≠厂商工程可烧录构建（那需要 SDK_BUILD_PASSED）。
             </div>
             <button className="btn ghost" style={{ width: "100%", marginTop: 8 }} disabled={ctx.busy} onClick={ctx.runVerify}>🔍 静态验证</button>
             {b.verify_issues?.length > 0 && b.verify_issues.map((is: any, i: number) => (

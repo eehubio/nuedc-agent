@@ -10,6 +10,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { validateBuildFiles } from "../lib/build-limits";
 
 const BASE = process.env.BASE_URL || "http://localhost:3000";
 const KEY = process.env.ADMIN_API_KEY || "";
@@ -48,10 +49,12 @@ function have(bin: string): boolean {
 
 function run(cmd: string, args: string[], cwd: string): { ok: boolean; out: string } {
   try {
-    const out = execFileSync(cmd, args, { cwd, stdio: "pipe", timeout: 120_000 }).toString();
-    return { ok: true, out };
+    // 沙箱限额：虚拟内存 1GB / CPU 90s / 单文件产物 16MB / 进程数 64（防编译炸弹与资源耗尽）
+    const wrapped = `ulimit -v 1048576 -t 90 -f 32768 -u 64; exec ${cmd} ${args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ")}`;
+    const out = execFileSync("bash", ["-c", wrapped], { cwd, stdio: "pipe", timeout: 120_000, maxBuffer: 4 * 1024 * 1024 }).toString();
+    return { ok: true, out: out.slice(0, 100_000) };
   } catch (e: any) {
-    return { ok: false, out: (e.stdout?.toString() || "") + (e.stderr?.toString() || e.message) };
+    return { ok: false, out: ((e.stdout?.toString() || "") + (e.stderr?.toString() || e.message)).slice(0, 100_000) };
   }
 }
 
@@ -65,8 +68,10 @@ async function buildOne(job: { job_id: string; target: string; files: string }) 
 
   const dir = mkdtempSync(join(tmpdir(), "build-"));
   const files: { path: string; content: string }[] = JSON.parse(job.files);
+  const bad = validateBuildFiles(files);
+  if (bad) return { status: "failed", log: `[runner] 输入被拒绝：${bad}` };
   for (const f of files) {
-    const p = join(dir, f.path.replace(/\.\./g, "_"));
+    const p = join(dir, f.path);
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, f.content);
   }
@@ -93,7 +98,7 @@ async function buildOne(job: { job_id: string; target: string; files: string }) 
   const link = run(tc.cc, [...tc.flags, "-nostartfiles", "-T", "__minimal.ld", "--specs=nano.specs",
     "-Wl,--gc-sections", ...objs, stubObj, "-o", "firmware.elf"], dir);
   log.push(`[ld]\n${link.out || "(无输出)"}`);
-  if (!link.ok) return { status: "compiled_nolink", log: log.concat("[runner] 编译通过但链接失败（通常缺厂商 SDK/启动文件）。编译错误为 0，可视为语法与类型验证通过。").join("\n") };
+  if (!link.ok) return { status: "SOURCE_COMPILED", log: log.concat("[runner] 逐文件编译通过（0 错误），但最小链接失败（通常缺厂商 SDK/启动文件）。这是语法与类型级验证通过，不是可烧录工程。").join("\n") };
 
   // size：Flash ≈ text+data，RAM ≈ data+bss
   const size = run("arm-none-eabi-size", ["firmware.elf"], dir);
@@ -109,9 +114,9 @@ async function buildOne(job: { job_id: string; target: string; files: string }) 
   const bin = existsSync(join(dir, "firmware.bin")) ? readFileSync(join(dir, "firmware.bin")) : null;
 
   return {
-    status: "success", log: log.join("\n"), flash_bytes: flash, ram_bytes: ram,
-    elf_b64: elf && elf.length < 2_000_000 ? elf.toString("base64") : null,
-    bin_b64: bin && bin.length < 2_000_000 ? bin.toString("base64") : null,
+    status: "MINIMAL_LINKED", log: log.join("\n"), flash_bytes: flash, ram_bytes: ram,
+    elf_b64: elf && elf.length < 512_000 ? elf.toString("base64") : null,
+    bin_b64: bin && bin.length < 512_000 ? bin.toString("base64") : null,
   };
 }
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, ensureSchema, uid } from "@/lib/db";
 import { assertProjectAccess, resolveTier } from "@/lib/auth";
+import { validateBuildFiles } from "@/lib/build-limits";
 
 export const runtime = "nodejs";
 
@@ -13,9 +14,8 @@ export async function POST(req: NextRequest) {
   if (!body?.target || !BUILD_TARGETS.includes(body.target)) {
     return NextResponse.json({ error: `target 必须是 ${BUILD_TARGETS.join(" / ")}` }, { status: 400 });
   }
-  if (!Array.isArray(body.files) || !body.files.length) {
-    return NextResponse.json({ error: "缺少 files: [{path, content}]" }, { status: 400 });
-  }
+  const bad = validateBuildFiles(body.files || []);
+  if (bad) return NextResponse.json({ error: bad }, { status: 400 });
   await ensureSchema();
   if (body.project_id) {
     const denied = await assertProjectAccess(req, body.project_id);

@@ -25,6 +25,15 @@ export async function POST(req: NextRequest) {
     if (denied) return denied;
   }
 
+  // 并发去重：同项目同 Agent 已有活动任务 → 直接返回该任务（防止连点两下并行烧两次 LLM）
+  if (projectId) {
+    const act = await db().execute({
+      sql: "SELECT task_id, status FROM agent_tasks WHERE project_id=? AND agent_type=? AND status IN ('queued','running') LIMIT 1",
+      args: [projectId, agent],
+    });
+    if (act.rows.length) return NextResponse.json({ task_id: act.rows[0].task_id, status: act.rows[0].status, deduped: true }, { status: 200 });
+  }
+
   // 幂等：同 key 已有任务直接返回，防重复扣费
   if (body.idempotency_key) {
     const ex = await db().execute({ sql: "SELECT task_id, status FROM agent_tasks WHERE idempotency_key=?", args: [body.idempotency_key] });
