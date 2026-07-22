@@ -31,7 +31,7 @@ registerAgent("solution_architect", async (input) => {
 模块目录：
 ${catalog || "（模块库为空，允许方案使用通用模块名，module_id 留空）"}`,
     messages: [{ role: "user", content: `结构化需求：\n${JSON.stringify(requirements).slice(0, 8000)}\n补充约束：${input.constraints || "无"}\n用户已选用的优先模块（在满足需求的前提下优先采用这些 id）：${JSON.stringify(input.preferred_modules || [])}` }],
-    maxTokens: 6144,
+    maxTokens: 12288,
     temperature: 0.5,
   });
 

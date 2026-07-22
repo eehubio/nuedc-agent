@@ -240,3 +240,32 @@ describe("编译输入护栏", () => {
     expect(validateBuildFiles([{ path: "src/main.c", content: "int main(){return 0;}" }])).toBeNull();
   });
 });
+
+describe("JSON 截断修复", () => {
+  it("修复断在字符串中间的输出（真实故障样本）", async () => {
+    const { repairTruncatedJson } = await import("../lib/llm");
+    const truncated = `{
+  "project_name": "集成运放参数测量装置",
+  "requirements": [
+    { "id": "REQ-001", "type": "constraint", "priority": "mandatory", "description": "需提供 DIP8 插座" },
+    { "id": "REQ-002", "type": "performance", "priority": "mandatory", "description": "测量单位增益带宽",
+      "target`;
+    const fixed = repairTruncatedJson(truncated);
+    expect(fixed).toBeTruthy();
+    const o = JSON.parse(fixed!);
+    expect(o.project_name).toBe("集成运放参数测量装置");
+    expect(o.requirements.length).toBeGreaterThanOrEqual(1);   // 保住完整的那些条目
+    expect(o.requirements[0].id).toBe("REQ-001");
+  });
+  it("修复断在数组元素之间的输出", async () => {
+    const { repairTruncatedJson } = await import("../lib/llm");
+    const o = JSON.parse(repairTruncatedJson('{"a":[1,2,3],"b":{"c":"x"},"d":[{"e":1},{"e":2},')!);
+    expect(o.a).toEqual([1, 2, 3]);
+    expect(o.d.length).toBe(2);
+  });
+  it("完整 JSON 原样返回；无 JSON 返回 null", async () => {
+    const { repairTruncatedJson } = await import("../lib/llm");
+    expect(JSON.parse(repairTruncatedJson('{"ok":true}')!)).toEqual({ ok: true });
+    expect(repairTruncatedJson("这不是 JSON")).toBeNull();
+  });
+});

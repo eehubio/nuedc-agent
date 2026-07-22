@@ -18,6 +18,7 @@ function modIcon(cat: string) { return CAT_ICON[String(cat).split(".")[0]] || "�
 /* ================= 首页 ================= */
 export function HomePage({ ctx }: { ctx: any }) {
   const [done, setDone] = useState<boolean[]>(PREP_TASKS.map(() => false));
+  const [detail, setDetail] = useState<any>(null);
   const doneN = done.filter(Boolean).length;
   const hot = useMemo(
     () => [...ctx.modules].sort((a, b) => (b.downloads || 0) - (a.downloads || 0) || (b.price || 0) - (a.price || 0)).slice(0, 5),
@@ -54,7 +55,8 @@ export function HomePage({ ctx }: { ctx: any }) {
             <h3>热门模块推荐 <span className="more" onClick={() => ctx.setPage("modules")}>更多模块 →</span></h3>
             <div className="grid cols-5">
               {hot.map((m) => (
-                <div key={m.id} className="mod-card">
+                <button key={m.id} className="mod-card as-button" onClick={() => setDetail(m)}
+                  title={`查看 ${m.name} 详情`}>
                   <div className="thumb">{modIcon(m.category)}</div>
                   <div>
                     <CertBadge s={m.certification_status} />
@@ -62,7 +64,7 @@ export function HomePage({ ctx }: { ctx: any }) {
                   </div>
                   <b>{m.name}</b>
                   <span className="hint">{m.main_chip}</span>
-                </div>
+                </button>
               ))}
               {!hot.length && <span className="hint">模块库为空 —— 运行 npm run db:seed 导入种子模块。</span>}
             </div>
@@ -105,6 +107,10 @@ export function HomePage({ ctx }: { ctx: any }) {
           </div>
         </div>
       </div>
+
+      {detail && <ModuleDetailModal detail={detail} onClose={() => setDetail(null)}
+        onPick={() => { ctx.setShortlist((s: string[]) => s.includes(detail.id) ? s : [...s, detail.id]); setDetail(null); }}
+        picked={ctx.shortlist?.includes(detail.id)} />}
 
       <div className="statsbar">
         <span><b>{ctx.modules.length}</b> 个结构化模块</span>
@@ -177,40 +183,57 @@ export function ModulesPage({ ctx }: { ctx: any }) {
         {!list.length && <p className="hint">没有匹配的模块。</p>}
       </div>
 
-      {detail && (
-        <div className="modal-mask" onClick={() => setDetail(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0 }}>{detail.name} <CertBadge s={detail.certification_status} />
-              {detail._completeness != null && <span className="chip">数据完整度 {detail._completeness}%</span>}</h3>
-            <p className="hint">{detail.description}</p>
-            <h4>接口定义</h4>
-            <table className="data"><thead><tr><th>接口</th><th>类型</th><th>电平</th><th>约束</th></tr></thead>
-              <tbody>
-                {(detail.interfaces || []).map((it: any, i: number) => (
-                  <tr key={i}>
-                    <td>{it.name}</td>
-                    <td>{it.interface_type}</td>
-                    <td>{it.voltage_level}V{it.five_v_tolerant ? "（5V 容忍）" : ""}</td>
-                    <td>{(it.constraints || []).join("；") || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <h4>电气参数</h4>
-            <p className="hint">供电 {detail.power?.input_voltage_range?.join("~")}V · 典型电流 {detail.power?.typical_current_ma}mA{detail.power?.peak_current_ma ? ` · 峰值 ${detail.power.peak_current_ma}mA` : ""}</p>
-            {detail.usage_notes?.length > 0 && (<><h4>使用要点</h4><ul>{detail.usage_notes.map((n: string) => <li key={n}>{n}</li>)}</ul></>)}
-            {detail.known_issues?.length > 0 && (<><h4>已知坑点</h4>{detail.known_issues.map((n: string) => <div key={n} className="issue warning">⚠ {n}</div>)}</>)}
-            {detail.competition_cases?.length > 0 && (<><h4>历届应用</h4><p className="hint">{detail.competition_cases.map((c: any) => `${c.year} ${c.problem}（${c.note}）`).join("；")}</p></>)}
-            {detail.assets_locked
-              ? <div className="issue info">🔒 原理图 / PCB / 代码仓库为付费资料，且仅开放「功能实测」及以上认证等级的模块。</div>
-              : detail.schematic_assets?.length > 0 && <p className="hint">含原理图等完整资料 {detail.schematic_assets.length} 份。</p>}
-            <div style={{ textAlign: "right", marginTop: 12 }}>
-              <button className="btn ghost sm" onClick={() => setDetail(null)}>关闭</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {detail && <ModuleDetailModal detail={detail} onClose={() => setDetail(null)}
+        onPick={() => { ctx.setShortlist((sl: string[]) => sl.includes(detail.id) ? sl : [...sl, detail.id]); setDetail(null); }}
+        picked={ctx.shortlist?.includes(detail.id)} />}
     </>
+  );
+}
+
+/* ================= 模块详情弹窗（首页与模块选型共用） ================= */
+export function ModuleDetailModal({ detail, onClose, onPick, picked }: { detail: any; onClose: () => void; onPick?: () => void; picked?: boolean }) {
+  return (
+    <div className="modal-mask" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3 style={{ marginTop: 0 }}>{detail.name} <CertBadge s={detail.certification_status} />
+          {detail._completeness != null && <span className="chip">数据完整度 {detail._completeness}%</span>}</h3>
+        <p className="hint">{categoryLabel(detail.category)} · {detail.main_chip}</p>
+        <p>{detail.description}</p>
+        <h4>接口定义</h4>
+        <table className="data"><thead><tr><th>接口</th><th>类型</th><th>电平</th><th>约束</th></tr></thead>
+          <tbody>
+            {(detail.interfaces || []).map((it: any, i: number) => (
+              <tr key={i}>
+                <td>{it.name}</td><td>{it.interface_type}</td>
+                <td>{it.voltage_level}V{it.five_v_tolerant ? "（5V 容忍）" : ""}</td>
+                <td>{(it.constraints || []).join("；") || "—"}</td>
+              </tr>
+            ))}
+            {!detail.interfaces?.length && <tr><td colSpan={4} className="hint">未录入接口 —— 规则引擎无法对其做电平检查</td></tr>}
+          </tbody>
+        </table>
+        <h4>电气参数</h4>
+        <p className="hint">供电 {detail.power?.input_voltage_range?.join("~") || "—"}V · 典型电流 {detail.power?.typical_current_ma ?? "—"}mA{detail.power?.peak_current_ma ? ` · 峰值 ${detail.power.peak_current_ma}mA` : ""}</p>
+        {detail.usage_notes?.length > 0 && (<><h4>使用要点</h4><ul>{detail.usage_notes.map((n: string) => <li key={n}>{n}</li>)}</ul></>)}
+        {detail.known_issues?.length > 0 && (<><h4>已知坑点</h4>{detail.known_issues.map((n: string) => <div key={n} className="issue warning">⚠ {n}</div>)}</>)}
+        {detail.competition_cases?.length > 0 && (<><h4>历届应用</h4><p className="hint">{detail.competition_cases.map((c: any) => `${c.year} ${c.problem}（${c.note || ""}）`).join("；")}</p></>)}
+        {detail.evidence_records?.length > 0 && (
+          <><h4>参数证据</h4><table className="data"><thead><tr><th>参数</th><th>实测</th><th>等级</th><th>条件</th></tr></thead>
+            <tbody>{detail.evidence_records.map((e: any, i: number) => (
+              <tr key={i}><td>{e.param}</td><td>{e.value}{e.unit || ""}</td>
+                <td><span className={"chip " + (["E5", "E6"].includes(e.evidence_level) ? "green" : "gold")}>{e.evidence_level}</span></td>
+                <td className="hint">{e.conditions || "—"}</td></tr>))}
+            </tbody></table></>
+        )}
+        {detail.assets_locked
+          ? <div className="issue info">🔒 原理图 / PCB / 代码仓库为付费资料，且仅开放「功能实测」及以上认证等级的模块。</div>
+          : detail.schematic_assets?.length > 0 && <p className="hint">含原理图等完整资料 {detail.schematic_assets.length} 份。</p>}
+        <div style={{ textAlign: "right", marginTop: 12, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button className="btn ghost sm" onClick={onClose}>关闭</button>
+          {onPick && <button className={"btn sm" + (picked ? " ok" : "")} onClick={onPick}>{picked ? "✓ 已选用" : "选用到方案"}</button>}
+        </div>
+      </div>
+    </div>
   );
 }
 

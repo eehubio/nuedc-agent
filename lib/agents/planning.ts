@@ -31,7 +31,7 @@ registerAgent("problem_interpreter", async (input) => {
    题面有评分项但未写分值的 points=null 且 points_type="estimated"；禁止编造分值。
    每个评分项用 requirement_ids 关联到对应的 REQ 编号`,
     messages: [{ role: "user", content: `赛题原文：\n\n${problemText}` }],
-    maxTokens: 4096,
+    maxTokens: 8192,
   });
 
   return {

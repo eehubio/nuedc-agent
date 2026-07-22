@@ -27,13 +27,62 @@ export async function llmComplete(opts: LlmOptions): Promise<string> {
 }
 
 /** 请求模型只输出 JSON，并做防御性解析（剥离 ```json 围栏、截取首尾大括号）。 */
+/** 修复被 token 上限截断的 JSON：回退到最后一个完整的元素边界，再补齐闭合符。
+ *  截断是长输出的常见失败模式，直接报错会让整次调用（和费用）白白浪费。 */
+export function repairTruncatedJson(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+
+  // 单遍扫描：记录每个「完整元素结束」的位置及其时刻的容器栈深度
+  type Mark = { pos: number; depth: number };
+  const marks: Mark[] = [];
+  const stack: string[] = [];
+  let inStr = false, esc = false, sawValue = false;
+
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (esc) { esc = false; continue; }
+    if (c === "\\") { esc = true; continue; }
+    if (c === '"') {
+      inStr = !inStr;
+      if (!inStr) { sawValue = true; marks.push({ pos: i, depth: stack.length }); }
+      continue;
+    }
+    if (inStr) continue;
+    if (c === "{" || c === "[") { stack.push(c === "{" ? "}" : "]"); sawValue = false; }
+    else if (c === "}" || c === "]") { stack.pop(); sawValue = true; marks.push({ pos: i, depth: stack.length }); }
+    else if (c === "," ) { sawValue = false; }
+    else if (/[0-9truefalsn.eE+-]/.test(c)) {
+      // 数字/布尔/null 的结束以下一个分隔符判定
+      const next = text[i + 1];
+      if (next === undefined || /[\s,}\]]/.test(next)) { sawValue = true; marks.push({ pos: i, depth: stack.length }); }
+    }
+  }
+
+  if (!stack.length) {
+    const end = text.lastIndexOf("}");
+    return end > start ? text.slice(start, end + 1) : null;
+  }
+
+  // 截断：从后往前找一个「值刚结束」的位置，且它不是某个键名（键名后面跟冒号）
+  for (let k = marks.length - 1; k >= 0; k--) {
+    const m = marks[k];
+    const after = text.slice(m.pos + 1, m.pos + 40);
+    if (/^\s*:/.test(after)) continue;          // 这是键名，不是值 → 不能在此截断
+    let body = text.slice(start, m.pos + 1);
+    // 补齐该位置所需的闭合符（栈的前 depth 层）
+    const need = stack.slice(0, m.depth).reverse();
+    body += need.join("");
+    try { JSON.parse(body); return body; } catch { /* 继续往前找 */ }
+  }
+  return null;
+}
+
 export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
-  const raw = await llmComplete({
-    ...opts,
-    system:
-      opts.system +
-      "\n\n输出要求：只输出一个合法 JSON 对象，不要输出 Markdown 代码围栏、前言或解释文字。",
-  });
+  const system = opts.system +
+    "\n\n输出要求：只输出一个合法 JSON 对象，不要输出 Markdown 代码围栏、前言或解释文字。" +
+    "\n务必控制篇幅：描述性字段简明扼要（每条不超过 60 字），确保 JSON 在 token 限额内完整闭合。";
+  const raw = await llmComplete({ ...opts, system });
   const cleaned = raw.replace(/```json|```/g, "").trim();
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
@@ -41,7 +90,28 @@ export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
   try {
     return JSON.parse(body) as T;
   } catch {
-    throw new Error("LLM 未返回合法 JSON：" + cleaned.slice(0, 400));
+    // 1) 尝试修复截断
+    const repaired = repairTruncatedJson(cleaned);
+    if (repaired) {
+      try {
+        const parsed = JSON.parse(repaired) as T;
+        console.warn("[llmJson] 输出被截断，已修复并保留完整部分");
+        return parsed;
+      } catch { /* 落到重试 */ }
+    }
+    // 2) 重试一次：更紧凑的输出要求 + 更大额度
+    try {
+      const retry = await llmComplete({
+        ...opts,
+        system: system + "\n上一次输出因过长被截断。请大幅精简：只保留必要字段，描述控制在 30 字以内。",
+        maxTokens: Math.min((opts.maxTokens ?? 4096) * 2, 16384),
+        temperature: 0,
+      });
+      const rc = retry.replace(/```json|```/g, "").trim();
+      const rs = rc.indexOf("{"), re = rc.lastIndexOf("}");
+      return JSON.parse(rs >= 0 && re > rs ? rc.slice(rs, re + 1) : rc) as T;
+    } catch { /* 落到抛错 */ }
+    throw new Error("LLM 输出无法解析为 JSON（已尝试截断修复与重试）。建议缩短赛题文本后重试。原始片段：" + cleaned.slice(0, 200));
   }
 }
 
