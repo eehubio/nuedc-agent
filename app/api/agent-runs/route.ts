@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
       const result = await runAgent(agent, body.input || {}, { projectId, stage, tier });
       await db().execute({
         sql: "UPDATE agent_runs SET status=?, output=?, error=? WHERE run_id=?",
-        args: [result.ok ? "ok" : "error", JSON.stringify(result).slice(0, 500000), result.ok ? null : result.message || "failed", taskId],
+        args: [result.ok ? "ok" : "error", JSON.stringify(result), result.ok ? null : result.message || "failed", taskId],  // Postgres TEXT 无需截断；截断会切坏 JSON
       });
     } catch (e: any) {
       await db().execute({

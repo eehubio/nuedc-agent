@@ -17,37 +17,50 @@ type AgentResult = { ok: boolean; output: any; message?: string; human_review_re
 
 // 慢 Agent（LLM 重活）走异步 run_id + 轮询，避免长请求被掐断与重复扣费；
 // 快 Agent（纯规则/短调用）仍走同步端点。
-const ASYNC_AGENTS = new Set(["solution_architect", "code_generator", "report_composer", "labsight_debug", "test_scoring", "problem_interpreter"]);
+const ASYNC_AGENTS = new Set(["solution_architect", "code_generator", "report_composer"]);
 
+async function safeJson(res: Response): Promise<any> {
+  try { return await res.json(); } catch { return { error: `HTTP ${res.status}（响应不是 JSON，可能是服务端错误页）` }; }
+}
+
+/** 永不抛异常：任何网络/解析失败都返回 { ok:false, message }，
+ *  否则异常会跳过调用方的 setBusy(false)，界面卡在"思考中"。 */
 export async function callAgent(agent: string, input: any, projectId: string | null): Promise<AgentResult> {
-  const body = JSON.stringify({ agent, input, project_id: projectId });
-  const headers = { "content-type": "application/json" };
+  try {
+    const body = JSON.stringify({ agent, input, project_id: projectId });
+    const headers = { "content-type": "application/json" };
 
-  if (ASYNC_AGENTS.has(agent)) {
-    const res = await fetch("/api/agent-runs", { method: "POST", headers, body });
-    const start = await res.json();
-    if (!res.ok) return { ok: false, output: null, message: start.error || `HTTP ${res.status}` };
-    // 轮询：前 20s 每 1.5s，之后每 3s，上限 5 分钟
-    const t0 = Date.now();
-    while (Date.now() - t0 < 300_000) {
-      await new Promise((r) => setTimeout(r, Date.now() - t0 < 20_000 ? 1500 : 3000));
-      const st = await fetch(`/api/agent-runs/${start.run_id}`).then((r) => r.json()).catch(() => null);
-      if (!st) continue;
-      if (st.status === "ok") return st.result as AgentResult;
-      if (st.status === "error") return (st.result as AgentResult) || { ok: false, output: null, message: st.error || "运行失败" };
+    if (ASYNC_AGENTS.has(agent)) {
+      const res = await fetch("/api/agent-runs", { method: "POST", headers, body });
+      const start = await safeJson(res);
+      if (!res.ok || !start.run_id) return { ok: false, output: null, message: start.error || `启动失败 HTTP ${res.status}` };
+      const t0 = Date.now();
+      while (Date.now() - t0 < 300_000) {
+        await new Promise((r) => setTimeout(r, Date.now() - t0 < 20_000 ? 1500 : 3000));
+        const st = await fetch(`/api/agent-runs/${start.run_id}`).then(safeJson).catch(() => null);
+        if (!st || st.error) continue;
+        if (st.status === "ok") return st.result as AgentResult;
+        if (st.status === "error") return (st.result as AgentResult) || { ok: false, output: null, message: st.error || "运行失败" };
+      }
+      return { ok: false, output: null, message: `任务超时。运行编号 ${start.run_id}，可到 Vercel Runtime Logs 查看该请求日志。` };
     }
-    return { ok: false, output: null, message: "任务超时（5 分钟）。可稍后在项目产物历史中查看是否已完成。" };
-  }
 
-  const res = await fetch("/api/agent", { method: "POST", headers, body });
-  const data = await res.json();
-  if (!res.ok && !data.message) data.message = data.error || `HTTP ${res.status}`;
-  return data as AgentResult;
+    const res = await fetch("/api/agent", { method: "POST", headers, body });
+    const data = await safeJson(res);
+    if (!res.ok && !data.message) data.message = data.error || `HTTP ${res.status}`;
+    return data as AgentResult;
+  } catch (e: any) {
+    return { ok: false, output: null, message: `请求失败：${e?.message || e}` };
+  }
 }
 
 export async function api(path: string, init?: RequestInit) {
-  const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
-  return res.json();
+  try {
+    const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
+    return await res.json();
+  } catch (e: any) {
+    return { error: `请求失败：${e?.message || e}` };
+  }
 }
 
 /** 向父页面（ezPLM）回传事件 */

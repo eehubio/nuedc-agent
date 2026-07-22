@@ -145,18 +145,21 @@ export default function Platform({ embed }: { embed: boolean }) {
     setProblemText(t);
     setBusy(true);
     say("user", t.length > 160 ? t.slice(0, 160) + "…" : t);
-    const pid = await ensureProject(t);
-    await api(`/api/projects/${pid}`, { method: "PATCH", body: JSON.stringify({ problem_text: t, stage: "PROBLEM_RECEIVED" }) });
-    setStage("PROBLEM_RECEIVED");
-    const r = await callAgent("problem_interpreter", { problem_text: t }, pid);
-    setBusy(false);
+    let r: any, pid: string | null = null;
+    try {
+      pid = await ensureProject(t);
+      if (!pid) { say("agent", "项目创建失败，请检查数据库连接后重试。"); return; }
+      await api(`/api/projects/${pid}`, { method: "PATCH", body: JSON.stringify({ problem_text: t, stage: "PROBLEM_RECEIVED" }) });
+      setStage("PROBLEM_RECEIVED");
+      r = await callAgent("problem_interpreter", { problem_text: t }, pid);
+    } finally { setBusy(false); }
     if (r.ok) {
       setRequirements(r.output);
       const amb = r.output?.ambiguities?.length || 0;
       say("agent", `已把题目拆成 ${r.output?.requirements?.length ?? 0} 条可核对指标（见右侧）。` +
         (amb ? `其中 ${amb} 处题面有歧义，我按常规理解做了标注，请核对。` : "") +
         `\n确认无误后点「生成候选方案」，我会给出两套不同取舍的方案。`);
-      await advanceStage("REQUIREMENTS_PARSED", pid);
+      await advanceStage("REQUIREMENTS_PARSED", pid || undefined);
       emitToEzplm("requirements_ready", r.output);
     } else say("agent", "解析失败：" + (r.message || ""));
   }
