@@ -599,3 +599,21 @@ describe("stale 横幅只对已存在产物显示", () => {
     expect(show(true, ["test_plan"], ["test_plan", "score", "test_report"])).toBe(true);
   });
 });
+
+describe("方案页布局结构（防回归）", () => {
+  it("设计助手必须是 solution-wrap 的直接子元素，否则会掉到需求清单下方", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("components/pages-build.tsx", "utf8");
+    const seg = src.slice(src.indexOf("export function SolutionPage"), src.indexOf("/* ============ 电路连线"));
+    const sub = seg.slice(seg.indexOf('<div className="solution-wrap">'));
+    let depth = 0;
+    let inside = "";
+    for (const m of sub.matchAll(/<div\b(?![^>]*\/>)|<\/div>/g)) {
+      depth += m[0].startsWith("<div") ? 1 : -1;
+      if (depth === 0) { inside = sub.slice(0, (m.index ?? 0) + m[0].length); break; }
+    }
+    expect(inside).not.toBe("");                    // solution-wrap 必须正确闭合
+    expect(inside).toContain("assistant-col");      // 助手在栅格内 → 才能并排显示
+    expect(inside).toContain("RequirementEditor");  // 需求清单也在栅格内
+  });
+});

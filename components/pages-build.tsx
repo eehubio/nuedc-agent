@@ -299,7 +299,6 @@ export function SolutionPage({ ctx }: { ctx: any }) {
             </div>
           )}
         </div>
-      </div>
         {/* 右列（视觉上）：AI 助手对话，吸顶常驻 */}
         <div className="card chatbox assistant-col">
           <div className="head"><span className="ai">AI</span>设计助手 · 渐进式方案发现</div>
@@ -309,6 +308,7 @@ export function SolutionPage({ ctx }: { ctx: any }) {
             ))}
             {ctx.busy && <div className="bubble agent"><span className="spinner" /> 思考中…</div>}
           </div>
+      </div>
           <div className="quickrow">
             {ctx.requirements && !ctx.solutions && (
               <button className="btn sm" disabled={ctx.busy} onClick={() => ctx.runSolution()}>生成方案</button>
@@ -333,7 +333,6 @@ export function SolutionPage({ ctx }: { ctx: any }) {
             <button className="btn" disabled={ctx.busy || !text.trim()} onClick={() => { ctx.chat(text); setText(""); }}>发送</button>
           </div>
         </div>
-
     </>
   );
 }
