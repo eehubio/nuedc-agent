@@ -1,19 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { waitUntil } from "@vercel/functions";
-import "@/lib/agents/index";
-import { runAgent } from "@/lib/agents/base";
 import { resolveTier } from "@/lib/auth";
 import { db, ensureSchema, uid } from "@/lib/db";
 import type { AgentType, ProjectStage } from "@/lib/types";
 import { AGENT_TYPES } from "@/lib/types";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
 
-/** 异步 Agent 运行（诊断 5.3）：
- *  POST 立即返回 run_id，实际执行由 waitUntil 在后台继续，
- *  前端轮询 GET /api/agent-runs/:id。避免 120s 长请求被浏览器/网关掐断、
- *  重复点击重复扣费、中断后无法恢复。 */
+/** 异步 Agent 运行 · 两段式（不依赖 waitUntil，可移植且可靠）：
+ *  1) POST /api/agent-runs        —— 落一条 queued 任务，秒回 run_id
+ *  2) POST /api/agent-runs/:id/execute —— 前端点火，普通函数内同步执行（maxDuration 300）
+ *  3) GET  /api/agent-runs/:id    —— 轮询状态；页面刷新也不丢任务 */
 export async function POST(req: NextRequest) {
   const tier = resolveTier(req);
   let body: any;
@@ -29,37 +25,13 @@ export async function POST(req: NextRequest) {
   }
 
   await ensureSchema();
-  let stage: ProjectStage = "PREPARATION";
-  const projectId: string | null = body.project_id || null;
-  if (projectId) {
-    const rs = await db().execute({ sql: "SELECT stage FROM projects WHERE project_id=?", args: [projectId] });
-    if (rs.rows.length) stage = String(rs.rows[0].stage) as ProjectStage;
-  }
-
-  // 排队记录（runAgent 内部会另写一条完成记录；这条是任务壳，run_id 即凭据）
   const taskId = uid("TASK");
   const model = process.env.LLM_PROVIDER === "gemini" ? (process.env.GEMINI_MODEL || "gemini-2.0-flash")
     : process.env.LLM_PROVIDER === "openai" ? (process.env.OPENAI_MODEL || "gpt-4o-mini")
     : (process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6");
   await db().execute({
     sql: "INSERT INTO agent_runs (run_id, project_id, agent_type, objective, input, status, model) VALUES (?,?,?,?,?,?,?)",
-    args: [taskId, projectId, agent, "async", JSON.stringify(body.input || {}).slice(0, 20000), "running", model],
+    args: [taskId, body.project_id || null, agent, JSON.stringify({ tier }), JSON.stringify(body.input || {}), "queued", model],
   });
-
-  waitUntil((async () => {
-    try {
-      const result = await runAgent(agent, body.input || {}, { projectId, stage, tier });
-      await db().execute({
-        sql: "UPDATE agent_runs SET status=?, output=?, error=? WHERE run_id=?",
-        args: [result.ok ? "ok" : "error", JSON.stringify(result), result.ok ? null : result.message || "failed", taskId],  // Postgres TEXT 无需截断；截断会切坏 JSON
-      });
-    } catch (e: any) {
-      await db().execute({
-        sql: "UPDATE agent_runs SET status='error', error=? WHERE run_id=?",
-        args: [String(e?.message || e).slice(0, 2000), taskId],
-      }).catch(() => {});
-    }
-  })());
-
-  return NextResponse.json({ run_id: taskId, status: "running", model }, { status: 202 });
+  return NextResponse.json({ run_id: taskId, status: "queued", model }, { status: 202 });
 }

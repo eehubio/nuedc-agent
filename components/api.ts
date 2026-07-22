@@ -34,13 +34,18 @@ export async function callAgent(agent: string, input: any, projectId: string | n
       const res = await fetch("/api/agent-runs", { method: "POST", headers, body });
       const start = await safeJson(res);
       if (!res.ok || !start.run_id) return { ok: false, output: null, message: start.error || `启动失败 HTTP ${res.status}` };
+      // 点火：执行请求由浏览器保持，普通函数内同步跑完（不依赖平台后台机制）
+      const ignite = () => fetch(`/api/agent-runs/${start.run_id}/execute`, { method: "POST", keepalive: true }).catch(() => {});
+      ignite();
       const t0 = Date.now();
+      let reIgnited = false;
       while (Date.now() - t0 < 300_000) {
         await new Promise((r) => setTimeout(r, Date.now() - t0 < 20_000 ? 1500 : 3000));
         const st = await fetch(`/api/agent-runs/${start.run_id}`).then(safeJson).catch(() => null);
         if (!st || st.error) continue;
         if (st.status === "ok") return st.result as AgentResult;
         if (st.status === "error") return (st.result as AgentResult) || { ok: false, output: null, message: st.error || "运行失败" };
+        if (st.status === "queued" && !reIgnited && Date.now() - t0 > 12_000) { reIgnited = true; ignite(); }
       }
       return { ok: false, output: null, message: `任务超时。运行编号 ${start.run_id}，可到 Vercel Runtime Logs 查看该请求日志。` };
     }

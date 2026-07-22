@@ -273,6 +273,7 @@ export default function Platform({ embed }: { embed: boolean }) {
     if (!requirements) { say("agent", "请先把赛题发给我完成需求解析。"); return; }
     setBusy(true);
     say("user", "生成候选方案");
+    say("agent", "正在设计两套候选方案（含框图与接口预检），通常需要 1~2 分钟，请稍候……");
     const r = await callAgent("solution_architect", {
       requirements,
       preferred_modules: shortlist.length ? shortlist : undefined,

@@ -526,7 +526,7 @@ function RequirementEditor({ ctx }: { ctx: any }) {
       {ctx.requirements.ambiguities?.length > 0 && (
         <div style={{ marginTop: 10 }}>
           {ctx.requirements.ambiguities.map((a: any, i: number) => (
-            <div key={i} className="issue warning">❓ 题面歧义：{typeof a === "string" ? a : a.text || JSON.stringify(a)}</div>
+            <div key={i} className="issue warning">❓ 题面歧义：{typeof a === "string" ? a : (a.description || a.text || JSON.stringify(a)) + (a.source ? `（出自：${a.source}）` : "")}</div>
           ))}
         </div>
       )}
