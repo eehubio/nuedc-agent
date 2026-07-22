@@ -405,3 +405,24 @@ textarea.area {
   padding: 3px 9px; font-size: 12px; cursor: pointer;
 }
 .diagram-toolbar button:hover { background: var(--bg); }
+
+/* 报告预览与编辑 */
+.report-preview {
+  padding: 20px 26px; max-height: 72vh; overflow-y: auto; line-height: 1.78; font-size: 14px;
+}
+.report-preview h1 { font-size: 20px; border-bottom: 2px solid var(--blue); padding-bottom: 7px; margin: 4px 0 14px; }
+.report-preview h2 { font-size: 16px; margin: 22px 0 8px; color: var(--blue-deep); }
+.report-preview h3 { font-size: 14px; margin: 16px 0 6px; }
+.report-preview p { margin: 8px 0; }
+.report-preview ul, .report-preview ol { margin: 8px 0 8px 22px; }
+.report-preview li { margin: 3px 0; }
+.report-preview pre { background: #f5f7fa; padding: 10px 12px; border-radius: 8px; overflow-x: auto; font-size: 12px; }
+.report-preview code { background: #f5f7fa; padding: 1px 5px; border-radius: 4px; font-family: var(--mono); font-size: 12px; }
+.report-preview table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }
+.report-preview th, .report-preview td { border: 1px solid var(--line); padding: 6px 9px; text-align: left; }
+.report-preview th { background: #eef2ff; }
+.report-preview hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+.report-editor {
+  width: 100%; min-height: 72vh; border: 0; padding: 18px 22px; resize: vertical;
+  font-family: var(--mono); font-size: 13px; line-height: 1.7; outline: none;
+}

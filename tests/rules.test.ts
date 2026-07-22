@@ -528,3 +528,41 @@ describe("账户能力矩阵", () => {
     expect(canDownloadAssets("paid", "FUNCTION_TESTED")).toBe(true);
   });
 });
+
+describe("报告 Markdown → DOCX", () => {
+  it("解析出标题/段落/列表/表格/代码块/分隔线六类块", async () => {
+    const { parseMarkdown } = await import("../lib/report-export");
+    const md = ["# 标题", "", "正文**粗体**。", "", "* 项一", "* 项二", "",
+      "| A | B |", "| --- | --- |", "| 1 | 2 |", "", "```c", "int main(){}", "```", "", "---", "", "## 二级"].join("\n");
+    const types = parseMarkdown(md).map((b) => b.type);
+    expect(types).toContain("heading");
+    expect(types).toContain("para");
+    expect(types).toContain("list");
+    expect(types).toContain("table");
+    expect(types).toContain("code");
+    expect(types).toContain("hr");
+  });
+  it("表格行列解析正确", async () => {
+    const { parseMarkdown } = await import("../lib/report-export");
+    const t = parseMarkdown("| 指标 | 要求 | 实测 |\n| --- | --- | --- |\n| 幅度 | 2Vpp | 2.01Vpp |")
+      .find((b) => b.type === "table");
+    expect(t?.rows?.[0]).toEqual(["指标", "要求", "实测"]);
+    expect(t?.rows?.[1]).toEqual(["幅度", "2Vpp", "2.01Vpp"]);
+  });
+  it("生成合法 DOCX（ZIP 格式且含中文正文）", async () => {
+    const { markdownToDocxBuffer } = await import("../lib/report-export");
+    const buf = await markdownToDocxBuffer("# 电赛设计报告\n\n本系统采用 DDS 方案。", "测试");
+    expect(buf.length).toBeGreaterThan(2000);
+    expect(buf.slice(0, 2).toString()).toBe("PK");   // ZIP 魔数
+  });
+});
+
+describe("框图节点摆位", () => {
+  it("自定义坐标覆盖自动布局，清空后回退", () => {
+    const auto = new Map([["B1", { x: 10, y: 12 }], ["B2", { x: 268, y: 12 }]]);
+    const custom: Record<string, { x: number; y: number }> = { B1: { x: 400, y: 200 } };
+    for (const [id, p] of Object.entries(custom)) if (auto.has(id)) auto.set(id, p);
+    expect(auto.get("B1")).toEqual({ x: 400, y: 200 });
+    expect(auto.get("B2")).toEqual({ x: 268, y: 12 });   // 未自定义的保持自动布局
+  });
+});

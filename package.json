@@ -18,6 +18,8 @@
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
+    "docx": "^9.7.1",
+    "marked": "^18.0.7",
     "next": "^14.2.33",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

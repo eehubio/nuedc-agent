@@ -288,6 +288,19 @@ export default function Platform({ embed }: { embed: boolean }) {
     say("agent", `已切换到备用方案 ${backupSolution.solution_id}。原主方案转为备用。`);
   }
 
+  // 框图节点手动摆位持久化（随方案产物一起存）
+  async function saveLayout(solutionId: string, layout: Record<string, { x: number; y: number }>) {
+    const apply = (sol: any) => (sol?.solution_id === solutionId ? { ...sol, layout } : sol);
+    setSolutions((ss: any) => ss ? { ...ss, solutions: (ss.solutions || ss.candidate_solutions || []).map(apply) } : ss);
+    setChosenSolution((c: any) => {
+      const next = apply(c);
+      if (c?.solution_id === solutionId && projectId) {
+        api(`/api/projects/${projectId}/artifacts`, { method: "POST", body: JSON.stringify({ type: "solution", content: next }) });
+      }
+      return next;
+    });
+  }
+
   // ============ 电源树编辑（修复电源类阻断项的正道）============
   async function updatePowerRail(railName: string, patch: any) {
     if (!chosenSolution) return;
@@ -480,8 +493,8 @@ export default function Platform({ embed }: { embed: boolean }) {
     msgs, chat, runInterpret, runSolution, approveSolution, runWiringCheck,
     runBomFromSolution, runBomFromText, runCode, runDebug, runReport, startFromDirection,
     updateRequirement, setReqStatus, confirmAllExtracted, addRequirement,
-    replaceBlock, markBackup, swapToBackup, runTestPlan, runScore, runVerify, updatePowerRail,
-    setPage, advanceStage,
+    replaceBlock, markBackup, swapToBackup, runTestPlan, runScore, runVerify, updatePowerRail, saveLayout,
+    setReport, setPage, advanceStage,
   };
 
   return (

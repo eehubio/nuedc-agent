@@ -36,11 +36,16 @@ function roleBucket(b: any): "in" | "core" | "out" | "power" {
   return "in";
 }
 export function BlockDiagram({ solution, ctx }: { solution: any; ctx?: any }) {
-  // 画布平移/缩放状态
+  // 画布平移/缩放 + 节点手动摆位
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const drag = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  const nodeDrag = useRef<{ id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
   const [dragging, setDragging] = useState(false);
   const [picked, setPicked] = useState<any>(null);
+  // 用户手动调整的节点坐标（覆盖自动布局），随方案一起持久化
+  const [custom, setCustom] = useState<Record<string, { x: number; y: number }>>(solution.layout || {});
+  useEffect(() => { setCustom(solution.layout || {}); }, [solution.solution_id, solution.layout]);
   const blocks: any[] = solution.blocks || [];
   const conns: any[] = solution.connections || [];
   const issues: any[] = solution.integration_precheck?.issues || [];
@@ -65,6 +70,11 @@ export function BlockDiagram({ solution, ctx }: { solution: any; ctx?: any }) {
     const token = String(endpoint).split(".")[0].toLowerCase();
     return blocks.find((b) => `${b.name} ${b.module_id} ${b.block_id}`.toLowerCase().includes(token)) || null;
   }
+  // 用户手动坐标优先于自动布局
+  for (const [id, p] of Object.entries(custom)) {
+    if (pos.has(id)) pos.set(id, p as any);
+  }
+
   function connColor(c: any): string {
     const hit = issues.find((is) => is.where && String(is.where).includes(String(c.from)) && String(is.where).includes(String(c.to)));
     if (hit?.severity === "blocker") return "#dc2626";
@@ -78,11 +88,32 @@ export function BlockDiagram({ solution, ctx }: { solution: any; ctx?: any }) {
     drag.current = { sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y };
     setDragging(true);
   }
+  function onNodeDown(e: React.MouseEvent, b: any) {
+    e.stopPropagation();
+    const p = pos.get(b.block_id);
+    if (!p) return;
+    nodeDrag.current = { id: b.block_id, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false };
+  }
   function onMove(e: React.MouseEvent) {
+    if (nodeDrag.current) {
+      const d = nodeDrag.current;
+      const dx = (e.clientX - d.sx) / view.k, dy = (e.clientY - d.sy) / view.k;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) d.moved = true;
+      setCustom((c) => ({ ...c, [d.id]: { x: Math.round(d.ox + dx), y: Math.round(d.oy + dy) } }));
+      return;
+    }
     if (!drag.current) return;
     setView((v) => ({ ...v, x: drag.current!.ox + (e.clientX - drag.current!.sx), y: drag.current!.oy + (e.clientY - drag.current!.sy) }));
   }
-  function onUp() { drag.current = null; setDragging(false); }
+  function onUp() {
+    if (nodeDrag.current?.moved) {
+      // 摆位结果随方案持久化（下次打开保持）
+      ctx?.saveLayout?.(solution.solution_id, { ...custom });
+    }
+    nodeDrag.current = null;
+    drag.current = null;
+    setDragging(false);
+  }
   function onWheel(e: React.WheelEvent) {
     e.preventDefault();
     setView((v) => ({ ...v, k: Math.min(2.5, Math.max(0.4, v.k * (e.deltaY < 0 ? 1.1 : 0.9))) }));
@@ -98,8 +129,11 @@ export function BlockDiagram({ solution, ctx }: { solution: any; ctx?: any }) {
       <div className="diagram-toolbar">
         <button onClick={() => setView((v) => ({ ...v, k: Math.min(2.5, v.k * 1.2) }))}>＋ 放大</button>
         <button onClick={() => setView((v) => ({ ...v, k: Math.max(0.4, v.k / 1.2) }))}>－ 缩小</button>
-        <button onClick={() => setView({ x: 0, y: 0, k: 1 })}>⟳ 复位</button>
-        <span className="hint">拖动可平移 · 滚轮缩放 · 点击功能块查看模块说明</span>
+        <button onClick={() => setView({ x: 0, y: 0, k: 1 })}>⟳ 视图复位</button>
+        {Object.keys(custom).length > 0 && (
+          <button onClick={() => { setCustom({}); ctx?.saveLayout?.(solution.solution_id, {}); }}>↺ 恢复自动布局</button>
+        )}
+        <span className="hint">拖动模块可调位置 · 拖动空白平移 · 滚轮缩放 · 点击模块看说明</span>
       </div>
       <div className={"diagram-canvas" + (dragging ? " dragging" : "")}
         onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} onWheel={onWheel}>
@@ -128,9 +162,10 @@ export function BlockDiagram({ solution, ctx }: { solution: any; ctx?: any }) {
           if (!p) return null;
           const bk = roleBucket(b);
           return (
-            <g key={b.block_id} style={{ cursor: "pointer" }}
-              onClick={(e) => { e.stopPropagation(); openBlock(b); }}>
-              <title>{`${b.name}｜点击查看模块说明`}</title>
+            <g key={b.block_id} style={{ cursor: nodeDrag.current?.id === b.block_id ? "grabbing" : "grab" }}
+              onMouseDown={(e) => onNodeDown(e, b)}
+              onClick={(e) => { e.stopPropagation(); if (!nodeDrag.current?.moved) openBlock(b); }}>
+              <title>{`${b.name}｜拖动可移动位置，点击查看模块说明`}</title>
               <rect x={p.x} y={p.y} width={W} height={H} rx={9} fill={bucketFill[bk]} stroke={bucketStroke[bk]} strokeWidth={bk === "core" ? 2 : 1.2} />
               <text x={p.x + W / 2} y={p.y + 21} textAnchor="middle" fontSize="11.5" fontWeight={700} fill="#1a2333">{b.name}</text>
               <text x={p.x + W / 2} y={p.y + 38} textAnchor="middle" fontSize="9.5" fill="#64748b" fontFamily="ui-monospace,monospace">{b.module_id || b.role}</text>
@@ -607,14 +642,90 @@ export function ReportPage({ ctx }: { ctx: any }) {
   const [incCode, setIncCode] = useState(true);
   const [incDebug, setIncDebug] = useState(false);
   const [err, setErr] = useState("");
+  const [mode, setMode] = useState<"preview" | "edit">("preview");
+  const [draft, setDraft] = useState("");
+  const [saveMsg, setSaveMsg] = useState("");
   const r = ctx.report;
+  const md: string = r?.markdown || r?.content || "";
+
+  useEffect(() => { setDraft(md); }, [md]);
+
+  async function save() {
+    setSaveMsg("保存中…");
+    const res = await fetch("/api/report/export", {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ project_id: ctx.projectId, markdown: draft }),
+    }).then((x) => x.json()).catch(() => null);
+    if (res?.version) {
+      ctx.setReport?.({ ...(r || {}), markdown: draft, edited_by_user: true });
+      setSaveMsg(`已保存为第 ${res.version} 版`);
+      setMode("preview");
+    } else setSaveMsg(res?.error || "保存失败");
+    setTimeout(() => setSaveMsg(""), 4000);
+  }
+
+  function printPdf() {
+    // 用浏览器打印导出 PDF：中文字体最可靠，且用户可选纸张与页边距
+    const w = window.open("", "_blank");
+    if (!w) return;
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${r?.title || "电赛设计报告"}</title>
+<style>
+  body { font-family: "Microsoft YaHei","PingFang SC",sans-serif; line-height: 1.75; max-width: 780px; margin: 40px auto; color: #1a2333; }
+  h1 { font-size: 22px; border-bottom: 2px solid #2563eb; padding-bottom: 8px; }
+  h2 { font-size: 17px; margin-top: 26px; color: #14274e; }
+  h3 { font-size: 15px; margin-top: 18px; }
+  pre { background: #f5f7fa; padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 12px; }
+  code { background: #f5f7fa; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }
+  th, td { border: 1px solid #d8e0ee; padding: 6px 9px; text-align: left; }
+  th { background: #eef2ff; }
+  blockquote { border-left: 3px solid #cbd5e1; margin: 0; padding-left: 12px; color: #64748b; }
+  @media print { body { margin: 0; max-width: none; } }
+</style></head><body>${mdToHtml(draft || md)}
+<script>window.onload=()=>{window.print()}<\/script></body></html>`);
+    w.document.close();
+  }
+
   return (
-    <div className="grid" style={{ gridTemplateColumns: "300px 1fr", alignItems: "start" }}>
+    <div className="grid" style={{ gridTemplateColumns: "1fr 300px", alignItems: "start" }}>
+      {/* 左：预览 / 编辑 */}
       <div style={{ display: "grid", gap: 14 }}>
-        <div className="card">
-          <h3>报告章节（按电赛规范）</h3>
-          {CHAPTERS.map((c, i) => <div key={c} className="chapter"><span className="n">{i + 1}</span>{c}</div>)}
-        </div>
+        {r?.consistency_issues?.length > 0 && (
+          <div className="card">
+            <h3>一致性检查（{r.consistency_issues.length} 处需核实）</h3>
+            {r.consistency_issues.map((c: any, i: number) => (
+              <div key={i} className="issue warning">⚠ {typeof c === "string" ? c : c.message || JSON.stringify(c)}</div>
+            ))}
+          </div>
+        )}
+
+        {md ? (
+          <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "10px 14px", borderBottom: "1px solid var(--line)" }}>
+              <button className={"btn sm" + (mode === "preview" ? "" : " ghost")} onClick={() => setMode("preview")}>👁 预览</button>
+              <button className={"btn sm" + (mode === "edit" ? "" : " ghost")} onClick={() => setMode("edit")}>✏️ 编辑</button>
+              {mode === "edit" && <button className="btn sm ok" onClick={save}>💾 保存</button>}
+              {mode === "edit" && draft !== md && <span className="chip gold">未保存</span>}
+              <span className="hint" style={{ marginLeft: "auto" }}>
+                {saveMsg || `${(draft || md).length} 字${r?.edited_by_user ? " · 已人工编辑" : ""}`}
+              </span>
+            </div>
+            {mode === "preview" ? (
+              <div className="report-preview" dangerouslySetInnerHTML={{ __html: mdToHtml(draft || md) }} />
+            ) : (
+              <textarea className="report-editor" value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} />
+            )}
+          </div>
+        ) : (
+          <div className="card">
+            <h3>还没有生成报告</h3>
+            <p className="hint">报告会基于已确认的方案、结构化需求、BOM 与测试数据撰写，遵循电赛设计报告章节规范。缺失的测试数据以【待补充】占位，不会编造数值。</p>
+          </div>
+        )}
+      </div>
+
+      {/* 右：章节导航 + 生成选项 + 导出 */}
+      <div style={{ display: "grid", gap: 14, position: "sticky", top: 12 }}>
         <div className="card">
           <h3>生成选项</h3>
           <div className="tasklist">
@@ -626,31 +737,79 @@ export function ReportPage({ ctx }: { ctx: any }) {
             setErr("");
             const res = await ctx.runReport({ includeBom: incBom, includeCode: incCode, includeDebug: incDebug });
             if (!res.ok) setErr(res.message || "生成失败");
-          }}>{ctx.busy ? "撰写中…" : "📄 生成报告"}</button>
+          }}>{ctx.busy ? "撰写中…" : md ? "🔄 重新生成" : "📄 生成报告"}</button>
           {err && <div className="issue blocker" style={{ marginTop: 10 }}>{err}</div>}
-          {r && ctx.projectId && (
-            <a className="btn ghost" style={{ display: "block", textAlign: "center", marginTop: 8, textDecoration: "none" }}
-              href={`/api/report?project_id=${ctx.projectId}`} download>⬇ 下载 Markdown</a>
+          {md && ctx.projectId && (
+            <>
+              <p className="hint" style={{ margin: "12px 0 6px" }}>导出（含你的编辑内容，先保存）</p>
+              <div style={{ display: "grid", gap: 6 }}>
+                <a className="btn ghost sm" style={{ textAlign: "center", textDecoration: "none" }}
+                  href={`/api/report/export?project_id=${ctx.projectId}&format=docx`}>⬇ Word (.docx)</a>
+                <button className="btn ghost sm" onClick={printPdf}>⬇ PDF（打印导出）</button>
+                <a className="btn ghost sm" style={{ textAlign: "center", textDecoration: "none" }}
+                  href={`/api/report/export?project_id=${ctx.projectId}&format=md`}>⬇ Markdown (.md)</a>
+              </div>
+            </>
           )}
-          <p className="hint" style={{ marginTop: 10 }}>缺失的测试数据会以【待补充】占位 —— 不会编造数值；生成后自动做型号一致性检查。</p>
+          <p className="hint" style={{ marginTop: 10 }}>缺失测试数据以【待补充】占位，不编造数值；生成后自动做型号一致性检查。</p>
         </div>
-      </div>
-
-      <div style={{ display: "grid", gap: 14 }}>
-        {r?.consistency_issues?.length > 0 && (
-          <div className="card">
-            <h3>一致性检查（{r.consistency_issues.length} 处需核实）</h3>
-            {r.consistency_issues.map((c: any, i: number) => (
-              <div key={i} className="issue warning">⚠ {typeof c === "string" ? c : c.message || JSON.stringify(c)}</div>
-            ))}
-          </div>
-        )}
-        <div className="report-md">{r?.markdown || r?.content || "生成后这里预览报告全文。\n\n报告将基于已确认的方案、结构化需求与 BOM 撰写，遵循电赛设计报告章节规范。"}</div>
+        <div className="card">
+          <h3>报告章节（电赛规范）</h3>
+          {CHAPTERS.map((c, i) => <div key={c} className="chapter"><span className="n">{i + 1}</span>{c}</div>)}
+        </div>
       </div>
     </div>
   );
 }
 
+/** 轻量 Markdown → HTML（预览与打印共用；仅覆盖报告用到的语法） */
+function mdToHtml(md: string): string {
+  const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (t: string) => esc(t)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  let i = 0, inList = false, listTag = "ul";
+  const closeList = () => { if (inList) { out.push(`</${listTag}>`); inList = false; } };
+
+  while (i < lines.length) {
+    const l = lines[i];
+    if (/^```/.test(l)) {
+      closeList();
+      const body: string[] = []; i++;
+      while (i < lines.length && !/^```/.test(lines[i])) { body.push(lines[i]); i++; }
+      i++;
+      out.push(`<pre><code>${esc(body.join("\n"))}</code></pre>`);
+      continue;
+    }
+    const h = l.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); i++; continue; }
+    if (/^\s*(-{3,}|\*{3,})\s*$/.test(l)) { closeList(); out.push("<hr/>"); i++; continue; }
+    if (/^\s*\|/.test(l) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      closeList();
+      const cells = (x: string) => x.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const head = cells(l); i += 2;
+      const body: string[][] = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) { body.push(cells(lines[i])); i++; }
+      out.push(`<table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${
+        body.map((rw) => `<tr>${rw.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
+      continue;
+    }
+    const li = l.match(/^\s*([-*+]|\d+\.)\s+(.*)$/);
+    if (li) {
+      const ordered = /\d/.test(li[1]);
+      if (!inList) { listTag = ordered ? "ol" : "ul"; out.push(`<${listTag}>`); inList = true; }
+      out.push(`<li>${inline(li[2])}</li>`); i++; continue;
+    }
+    if (!l.trim()) { closeList(); i++; continue; }
+    closeList();
+    out.push(`<p>${inline(l)}</p>`); i++;
+  }
+  closeList();
+  return out.join("\n");
+}
 
 /* ============ 需求编辑器（逐条编辑 / 确认 / 驳回）============ */
 const REQ_STATUS_UI: Record<string, [string, string]> = {
