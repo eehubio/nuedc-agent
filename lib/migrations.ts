@@ -431,6 +431,35 @@ ALTER TABLE modules ADD COLUMN IF NOT EXISTS inventory_qty INTEGER DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_modules_scope ON modules(scope, certification_status);
 `,
   },
+  {
+    id: 16,
+    name: "task_dedup_and_retry",
+    sql: `
+-- 结构化重试与去重字段
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS dedup_key TEXT;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS retryable INTEGER;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS provider_error_code TEXT;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS cost_class TEXT;
+
+-- 幂等键改为「按用户」唯一：不同用户可用相同 key 互不干扰，禁止跨用户覆盖
+DROP INDEX IF EXISTS idx_tasks_idem;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idem_owner
+  ON agent_tasks(owner_ref, idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+-- 活动任务并发去重：同一 dedup_key 同时只允许一条 queued/running 任务
+-- 该部分唯一索引让 INSERT ... ON CONFLICT DO NOTHING 成为原子幂等的唯一真相来源
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_dedup
+  ON agent_tasks(dedup_key) WHERE status IN ('queued','running') AND dedup_key IS NOT NULL;
+`,
+  },
+  {
+    id: 17,
+    name: "artifact_partial_metadata",
+    sql: `
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS metadata TEXT;
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS human_review_required INTEGER DEFAULT 0;
+`,
+  },
 ];
 
 let applied = false;

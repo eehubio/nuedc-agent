@@ -2,7 +2,7 @@ import type { z } from "zod";
 import { route } from "./router";
 import { policyFor, type TaskType } from "./task-policy";
 import { recordCall } from "./health";
-import { buildCacheKey, cacheGet, cacheSet, cacheDelete, inputHash } from "./cache";
+import { buildCacheKey, cacheGet, cacheSet, cacheDelete, inputHash, taskDedupKey } from "./cache";
 import { recordUsageEvent, checkBudget, estimateCost } from "./telemetry";
 import { ProviderError, type ChatMessage } from "./providers";
 import { getSystemMode, allowsPriority } from "../system-mode";
@@ -275,6 +275,7 @@ export const modelGateway = {
   },
 
   inputHash,
+  taskDedupKey,
 };
 
 export { policyFor, TASK_POLICIES, TASK_TYPES, AGENT_TASK_TYPE } from "./task-policy";

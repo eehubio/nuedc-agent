@@ -16,6 +16,8 @@ export async function saveArtifact(opts: {
   content: any;
   createdBy: string;
   status?: string;
+  humanReviewRequired?: boolean;   // partial / 需人工确认时置 1，禁止自动 reviewed
+  metadata?: Record<string, unknown>;  // partial_output / repair_applied 等
   sourceArtifactIds?: string[];    // 实例级溯源：本产物基于哪些具体版本生成
   changeReason?: string;
 }): Promise<{ artifact_id: string; version: number; content_hash: string; unchanged?: boolean }> {
@@ -31,12 +33,17 @@ export async function saveArtifact(opts: {
   }
   const version = Number(last.rows[0]?.version || 0) + 1;
   const id = uid("ART");
+  // partial 结果绝不能自动 reviewed：即使调用方传了 status=reviewed，也强制降级为 draft
+  const hrr = opts.humanReviewRequired ? 1 : 0;
+  const status = hrr ? "draft" : (opts.status || "reviewed");
   await db().execute({
     sql: `INSERT INTO artifacts (artifact_id, project_id, type, version, status, created_by, content,
-          source_artifact_ids, schema_version, content_hash, change_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-    args: [id, opts.projectId, opts.type, version, opts.status || "reviewed", opts.createdBy,
+          source_artifact_ids, schema_version, content_hash, change_reason, metadata, human_review_required)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    args: [id, opts.projectId, opts.type, version, status, opts.createdBy,
       JSON.stringify(opts.content), JSON.stringify(opts.sourceArtifactIds || []),
-      ARTIFACT_SCHEMA_VERSION, hash, opts.changeReason || null],
+      ARTIFACT_SCHEMA_VERSION, hash, opts.changeReason || null,
+      opts.metadata ? JSON.stringify(opts.metadata) : null, hrr],
   });
   // 实例级依赖边
   for (const src of opts.sourceArtifactIds || []) {
@@ -65,7 +72,7 @@ export async function markStale(projectId: string, types: string[]): Promise<voi
 export async function latestArtifacts(projectId: string) {
   await ensureSchema();
   const rs = await db().execute({
-    sql: `SELECT a.artifact_id, a.type, a.version, a.status, a.created_by, a.content, a.created_at, a.content_hash, a.source_artifact_ids, a.change_reason
+    sql: `SELECT a.artifact_id, a.type, a.version, a.status, a.created_by, a.content, a.created_at, a.content_hash, a.source_artifact_ids, a.change_reason, a.metadata, a.human_review_required
           FROM artifacts a
           JOIN (SELECT type, MAX(version) AS v FROM artifacts WHERE project_id=? GROUP BY type) m
             ON a.type=m.type AND a.version=m.v
@@ -76,6 +83,8 @@ export async function latestArtifacts(projectId: string) {
     artifact_id: r.artifact_id, type: String(r.type), version: Number(r.version),
     status: String(r.status), created_by: r.created_by, created_at: r.created_at,
     content_hash: r.content_hash, change_reason: r.change_reason,
+    human_review_required: Number(r.human_review_required || 0) === 1,
+    metadata: (() => { try { return r.metadata ? JSON.parse(String(r.metadata)) : null; } catch { return null; } })(),
     source_artifact_ids: (() => { try { return JSON.parse(String(r.source_artifact_ids || "[]")); } catch { return []; } })(),
     content: (() => { try { return JSON.parse(String(r.content)); } catch { return null; } })(),
   }));

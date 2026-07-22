@@ -17,7 +17,7 @@
 
 import { hostname } from "node:os";
 import "../lib/agents/index";
-import { runAgent } from "../lib/agents/base";
+import { runAgent, isRetryable, classifyAgentError } from "../lib/agents/base";
 import { claimTask, heartbeat, reclaimExpired, completeTask, failTask, HEARTBEAT_MS, type ClaimedTask } from "../lib/task-queue";
 import { db, ensureSchema } from "../lib/db";
 import type { AgentType, ProjectStage } from "../lib/types";
@@ -73,21 +73,45 @@ async function executeOne(task: ClaimedTask): Promise<void> {
     }).catch(() => ({ rows: [] as any[] }));
     const wasCanceled = Number((canceled.rows[0] as any)?.cancel_requested || 0) === 1;
 
-    await completeTask({
-      taskId: task.task_id, workerId: WORKER_ID,
-      ok: result.ok, canceled: wasCanceled, result, runId: result.run_id,
-      errorCode: result.ok ? null : "AGENT_FAILED",
-    });
-    log(`${result.ok ? "✓" : "✗"} ${task.task_id} ${task.agent_type} (${task.task_type || "-"})${result.ok ? "" : " · " + (result.message || "").slice(0, 60)}`);
+    if (result.ok || wasCanceled) {
+      // 成功 → success 终态并结算；取消 → canceled 终态并退款（已用 token 仍计费）
+      await completeTask({
+        taskId: task.task_id, workerId: WORKER_ID,
+        ok: result.ok, canceled: wasCanceled, result, runId: result.run_id,
+        errorCode: null,
+      });
+      log(`${wasCanceled ? "✋" : "✓"} ${task.task_id} ${task.agent_type} (${task.task_type || "-"})`);
+    } else {
+      // Agent 失败：结构化错误决定重试还是终态
+      const retryable = result.retryable === true || isRetryable(result.error_code);
+      if (retryable) {
+        // 可重试 → 重新入队（未达上限）或进死信退款（已达上限）
+        const outcome = await failTask({
+          taskId: task.task_id, workerId: WORKER_ID,
+          message: result.message || "agent failed",
+          errorCode: result.error_code || "UNKNOWN", retryable: true,
+        });
+        log(`↻ ${task.task_id} ${task.agent_type} 失败(${result.error_code}) → ${outcome}: ${(result.message || "").slice(0, 60)}`);
+      } else {
+        // 不可重试 → 直接写 error 终态并结算（退款）
+        await completeTask({
+          taskId: task.task_id, workerId: WORKER_ID,
+          ok: false, canceled: false, result, runId: result.run_id,
+          errorCode: result.error_code || "UNKNOWN",
+        });
+        log(`✗ ${task.task_id} ${task.agent_type} 不可重试(${result.error_code}): ${(result.message || "").slice(0, 60)}`);
+      }
+    }
   } catch (e: any) {
+    // 未被 runAgent 归类的意外异常（多为基础设施类）：按错误码判定，默认可重试瞬时错误
     const msg = String(e?.message || e);
-    // 网络/超时类错误可重试；业务错误不重试
-    const retryable = /timeout|ECONN|fetch failed|socket|502|503|504/i.test(msg);
+    const code = classifyAgentError(msg);
+    const retryable = isRetryable(code) || /timeout|ECONN|fetch failed|socket|502|503|504/i.test(msg);
     const outcome = await failTask({
       taskId: task.task_id, workerId: WORKER_ID, message: msg,
-      errorCode: retryable ? "TRANSIENT" : "EXECUTION_ERROR", retryable,
+      errorCode: code, retryable,
     });
-    log(`✗ ${task.task_id} 异常 → ${outcome}: ${msg.slice(0, 100)}`);
+    log(`✗ ${task.task_id} 异常(${code}) → ${outcome}: ${msg.slice(0, 100)}`);
   } finally {
     clearInterval(hb);
     inFlight--;
