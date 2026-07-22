@@ -96,6 +96,11 @@ async function oneUser(i: number): Promise<Sample> {
         },
       }),
     });
+    // 推进到需求已解析阶段 —— 否则 solution_architect 会被状态机门禁拒绝
+    await call(`/api/projects/${pid}`, {
+      method: "PATCH",
+      body: JSON.stringify({ stage: "REQUIREMENTS_PARSED" }),
+    });
     s.adoptMs = Date.now() - a0;
 
     // 3. 提交主方案任务（重型任务，走队列）
@@ -104,7 +109,18 @@ async function oneUser(i: number): Promise<Sample> {
       body: JSON.stringify({
         agent: "solution_architect",
         project_id: pid,
-        input: { requirements: { requirements: [{ id: "REQ-001", description: "压测", priority: "mandatory", status: "CONFIRMED" }] }, force: true },
+        input: {
+          requirements: {
+            requirements: Array.from({ length: 4 }, (_, k) => ({
+              id: `REQ-${String(k + 1).padStart(3, "0")}`,
+              type: "performance", description: `压测需求 ${k + 1}`,
+              target: 5, unit: "V", tolerance: "±1%",
+              priority: "mandatory", source: "压测",
+              verification_method: "measurement", status: "CONFIRMED",
+            })),
+            scoring_items: [],
+          },
+        },
       }),
     });
     if (task.status === 429) { s.http429 = true; s.errorCode = "USER_CONCURRENCY"; s.totalMs = Date.now() - t0; return s; }
@@ -132,7 +148,7 @@ async function oneUser(i: number): Promise<Sample> {
         s.cost = d.cost || 0;
         s.fallback = !!d.fallback_used;
         s.provider = d.model || d.result?.provider;
-        if (!s.ok) s.errorCode = d.error?.slice(0, 40) || d.status;
+        if (!s.ok) s.errorCode = d.error?.slice(0, 70) || d.status;
         break;
       }
     }
@@ -149,9 +165,58 @@ function pct(sorted: number[], p: number): number {
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
 }
 
+async function preflight(): Promise<boolean> {
+  // 用一次极小的探测请求确认服务端 Provider —— 避免"以为在 mock，其实在烧真钱"
+  try {
+    const res = await fetch(`${BASE}/api/admin/system-mode`, { headers: { "content-type": "application/json" } });
+    const mode = await res.json().catch(() => null);
+    console.log(`服务端模式：${mode?.label || mode?.mode || "未知"} · 当前队列 ${mode?.queue_length ?? "?"}`);
+  } catch {
+    console.log("⚠ 无法连接服务端，请检查 BASE_URL");
+    return false;
+  }
+  if (REAL) return true;
+
+  // 建一个探测项目跑一次最轻的任务，检查返回的 provider 是否为 mock
+  let cookie = "";
+  const call = async (path: string, init: RequestInit = {}) => {
+    const r = await fetch(BASE + path, { ...init, headers: { "content-type": "application/json", cookie, ...(init.headers || {}) } });
+    const sc = r.headers.get("set-cookie"); if (sc) cookie = sc.split(";")[0];
+    return { status: r.status, data: await r.json().catch(() => null) };
+  };
+  const p = await call("/api/projects", { method: "POST", body: JSON.stringify({ name: "压测预检" }) });
+  if (!p.data?.project_id) {
+    console.log(`⚠ 预检失败：创建项目返回 ${p.status} ${JSON.stringify(p.data)?.slice(0, 120)}`);
+    return false;
+  }
+  const t = await call("/api/agent-tasks", {
+    method: "POST",
+    body: JSON.stringify({ agent: "topic_forecast", project_id: p.data.project_id, input: { device_list: ["MSPM0"] } }),
+  });
+  if (!t.data?.task_id) { console.log("⚠ 预检任务创建失败，跳过 mock 校验"); return true; }
+  await fetch(`${BASE}/api/agent-tasks/${t.data.task_id}/execute`, { method: "POST", headers: { cookie } }).catch(() => {});
+  for (let i = 0; i < 20; i++) {
+    await sleep(1500);
+    const st = await call(`/api/agent-tasks/${t.data.task_id}`);
+    const s = st.data?.status;
+    if (s && !["queued", "running"].includes(s)) {
+      const provider = st.data?.result?.provider || st.data?.model || "";
+      if (/mock/i.test(String(provider))) { console.log(`✓ 预检通过：服务端使用 mock provider（${provider}）\n`); return true; }
+      console.log(`\n⛔ 服务端未使用 mock，实际 provider = "${provider}"`);
+      console.log("   这意味着压测会产生真实模型费用。请在部署环境设置 ENABLE_MOCK_PROVIDER=1 并【重新部署】后再跑；");
+      console.log("   若确认要用真实模型压测，请显式加 --real 参数。\n");
+      return false;
+    }
+  }
+  console.log("⚠ 预检超时，未能确认 provider，中止以免误烧费用。加 --real 可跳过此检查。");
+  return false;
+}
+
 async function main() {
   console.log(`压测目标：${BASE}`);
   console.log(`并发用户：${USERS} · 爬坡：${RAMP_SEC}s · 模式：${REAL ? "⚠ 真实模型" : "mock"}\n`);
+
+  if (!(await preflight())) process.exit(2);
 
   const t0 = Date.now();
   const tasks: Promise<Sample>[] = [];

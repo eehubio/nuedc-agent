@@ -311,3 +311,31 @@ describe("基础故障不返回空响应（压测发现）", () => {
     }
   });
 });
+
+describe("压测脚本与状态机一致性", () => {
+  it("压测推进到的阶段确实允许 solution_architect", async () => {
+    const fs = await import("node:fs");
+    const { STAGE_ALLOWED_AGENTS } = await import("../lib/types");
+    const src = fs.readFileSync("scripts/load-test.mts", "utf8");
+    const m = src.match(/stage:\s*"([A-Z_]+)"/);
+    expect(m, "压测脚本必须显式推进项目阶段").toBeTruthy();
+    const stage = m![1];
+    expect((STAGE_ALLOWED_AGENTS as any)[stage]).toContain("solution_architect");
+  });
+
+  it("压测提交的需求全部为 CONFIRMED（方案 Agent 有需求确认门禁）", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("scripts/load-test.mts", "utf8");
+    const taskBlock = src.slice(src.indexOf('agent: "solution_architect"'), src.indexOf('agent: "solution_architect"') + 900);
+    expect(taskBlock).toContain('status: "CONFIRMED"');
+    expect(taskBlock).toContain('priority: "mandatory"');
+  });
+
+  it("非 --real 模式必须先做 mock 预检，未通过则中止", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("scripts/load-test.mts", "utf8");
+    expect(src).toContain("async function preflight");
+    expect(src).toContain("if (!(await preflight())) process.exit(2)");
+    expect(src).toContain("会产生真实模型费用");
+  });
+});
