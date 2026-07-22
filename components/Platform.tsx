@@ -326,7 +326,7 @@ export default function Platform({ embed }: { embed: boolean }) {
     setBusy(false);
     if (r.ok) {
       setSolutions(r.output);
-      const n = r.output?.solutions?.length ?? 0;
+      const n = (r.output?.solutions || r.output?.candidate_solutions)?.length ?? 0;
       say("agent", `已生成 ${n} 套候选方案（含框图与接口预检，见右侧）。两套方案的取舍不同，请对比后人工确认一套 —— 这是硬性流程，方案不确认无法进入 BOM 和代码。`);
       if (projectId) await advanceStage("SOLUTION_CANDIDATES");
     } else say("agent", "生成失败：" + (r.message || "") + "\n\n可尝试：① 减少已选用模块数量（当前会全部纳入考虑）；② 精简需求清单后重试；③ 若反复失败，检查 Vercel 日志中 LLM 调用的报错。");

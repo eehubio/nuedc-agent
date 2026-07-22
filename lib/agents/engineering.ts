@@ -35,8 +35,23 @@ ${catalog || "（模块库为空，允许方案使用通用模块名，module_id
     temperature: 0.5,
   });
 
+  // 结构校验：截断修复可能只保住残缺方案 —— 残缺不得当成功返回
+  const rawSols = (out as any)?.candidate_solutions || (out as any)?.solutions;
+  if (!Array.isArray(rawSols) || !rawSols.length) {
+    return { ok: false, output: null, message: "模型输出不完整（未解析出任何方案）。建议减少已选用模块数量、精简需求后重试。" };
+  }
+  const usable = rawSols.filter(
+    (sl: any) => sl?.solution_id && sl?.name && Array.isArray(sl.blocks) && sl.blocks.length
+  );
+  if (!usable.length) {
+    return { ok: false, output: null, message: "模型输出被截断，方案缺少功能块。建议减少已选用模块数量后重试。" };
+  }
+  const truncation_note = usable.length < rawSols.length
+    ? `模型输出偏长，已丢弃 ${rawSols.length - usable.length} 套残缺方案，保留 ${usable.length} 套完整方案`
+    : undefined;
+
   // 生成后立即做规则预检（需求覆盖 + 接口兼容），结果附在每套方案上
-  const solutions = (out.candidate_solutions || []).map((sol) => {
+  const solutions = usable.map((sol: SolutionProposal) => {
     const integration = checkIntegration(sol, index);
     return { ...sol, integration_precheck: integration };
   });
@@ -44,9 +59,10 @@ ${catalog || "（模块库为空，允许方案使用通用模块名，module_id
   return {
     ok: true,
     artifact_type: "solution_proposal",
-    output: { ...out, candidate_solutions: solutions },
+    // solutions 为前端契约字段；candidate_solutions 保留以兼容历史产物
+    output: { ...out, solutions, candidate_solutions: solutions, truncation_note },
     human_review_required: true, // 候选方案必须人工确认才能变成最终方案
-    message: `生成 ${solutions.length} 套候选方案，请人工确认后进入 BOM/代码阶段`,
+    message: `生成 ${solutions.length} 套候选方案，请人工确认后进入 BOM/代码阶段${truncation_note ? "（" + truncation_note + "）" : ""}`,
   };
 });
 

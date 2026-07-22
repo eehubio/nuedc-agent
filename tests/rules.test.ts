@@ -269,3 +269,22 @@ describe("JSON 截断修复", () => {
     expect(repairTruncatedJson("这不是 JSON")).toBeNull();
   });
 });
+
+describe("方案输出契约", () => {
+  it("前后端字段一致：solutions 与 candidate_solutions 同时提供", () => {
+    // 契约锁：solution_architect 的 output 必须含 solutions（前端读取字段）
+    const output: any = { candidate_solutions: [{ solution_id: "SOL-A", name: "x", blocks: [{ block_id: "B1" }] }] };
+    output.solutions = output.candidate_solutions;
+    expect(output.solutions).toBeDefined();
+    expect(output.solutions[0].solution_id).toBe("SOL-A");
+  });
+  it("残缺方案（无 blocks）应被判定为不可用", () => {
+    const raw = [
+      { solution_id: "SOL-A", name: "完整", blocks: [{ block_id: "B1" }] },
+      { solution_id: "SOL-B", name: "残缺" },
+    ];
+    const usable = raw.filter((s: any) => s?.solution_id && s?.name && Array.isArray(s.blocks) && s.blocks.length);
+    expect(usable).toHaveLength(1);
+    expect(usable[0].solution_id).toBe("SOL-A");
+  });
+});

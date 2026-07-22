@@ -140,7 +140,10 @@ export function SolutionPage({ ctx }: { ctx: any }) {
         <div style={{ display: "grid", gap: 14 }}>
           {ctx.requirements && <RequirementEditor ctx={ctx} />}
 
-          {(ctx.solutions?.solutions || []).map((sol: any) => {
+          {ctx.solutions?.truncation_note && (
+            <div className="issue warning">⚠ {ctx.solutions.truncation_note}</div>
+          )}
+          {(ctx.solutions?.solutions || ctx.solutions?.candidate_solutions || []).map((sol: any) => {
             const pre = sol.integration_precheck;
             const chosen = ctx.chosenSolution?.solution_id === sol.solution_id;
             return (
@@ -599,7 +602,7 @@ function BlockList({ sol, ctx }: { sol: any; ctx: any }) {
   const [q, setQ] = useState("");
   const [showMatrix, setShowMatrix] = useState(false);
   const reqs = (ctx.requirements?.requirements || []).filter((r: any) => r.status !== "REJECTED");
-  const otherSol = (ctx.solutions?.solutions || []).find((x: any) => x.solution_id !== sol.solution_id);
+  const otherSol = (ctx.solutions?.solutions || ctx.solutions?.candidate_solutions || []).find((x: any) => x.solution_id !== sol.solution_id);
 
   const candidates = replacing ? [
     // 另一套方案中同角色的模块置顶（支持"从两套方案合并"）

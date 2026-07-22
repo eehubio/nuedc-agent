@@ -57,13 +57,24 @@ export async function cancelActiveTask() {
 /** 轮询任务直到终态。ignite=true 时先点火；页面刷新恢复时 ignite=false（可能已在跑）。 */
 export async function pollTask(taskId: string, ignite: boolean): Promise<AgentResult & { agent?: string }> {
   _activeTask = taskId;
-  const fire = () => fetch(`/api/agent-tasks/${taskId}/execute`, { method: "POST", keepalive: true }).catch(() => {});
+  let direct: AgentResult | null = null;
+  // 点火请求本身会同步跑完并回传结果 —— 拿到就用（轮询仅作为刷新恢复/丢包时的后备）
+  const fire = () => fetch(`/api/agent-tasks/${taskId}/execute`, { method: "POST", keepalive: true })
+    .then(safeJson)
+    .then((d) => {
+      if (d?.status === "ok" && d.result) direct = d.result as AgentResult;
+      else if (d?.status === "error") direct = (d.result as AgentResult) || { ok: false, output: null, message: d.error || "运行失败" };
+      else if (d?.status === "canceled") direct = { ok: false, output: null, message: "任务已取消" };
+    })
+    .catch(() => {});
   if (ignite) fire();
   const t0 = Date.now();
   let reIgnited = false;
   try {
     while (Date.now() - t0 < 300_000) {
+      if (direct) return direct;
       await new Promise((r) => setTimeout(r, Date.now() - t0 < 20_000 ? 1500 : 3000));
+      if (direct) return direct;
       const st = await fetch(`/api/agent-tasks/${taskId}`).then(safeJson).catch(() => null);
       if (!st || st.error && !st.status) continue;
       if (st.status === "ok") return { ...(st.result as AgentResult), agent: st.agent };

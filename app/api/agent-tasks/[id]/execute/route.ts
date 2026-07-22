@@ -42,12 +42,18 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
       args: [canceled ? "canceled" : result.ok ? "ok" : "error", JSON.stringify(result),
         canceled ? "已取消（结果作废）" : result.ok ? null : result.message || "failed", result.run_id || null, params.id],
     });
-    return NextResponse.json({ task_id: params.id, status: canceled ? "canceled" : result.ok ? "ok" : "error" });
+    // 直接回传结果：前端拿到即用，避免"服务端已完成但前端还在轮询"的竞态
+    return NextResponse.json({
+      task_id: params.id,
+      status: canceled ? "canceled" : result.ok ? "ok" : "error",
+      result: canceled ? null : result,
+      error: canceled ? "已取消（结果作废）" : result.ok ? null : result.message || null,
+    });
   } catch (e: any) {
     await db().execute({
       sql: "UPDATE agent_tasks SET status='error', error=?, updated_at=now() WHERE task_id=?",
       args: [String(e?.message || e).slice(0, 2000), params.id],
     }).catch(() => {});
-    return NextResponse.json({ task_id: params.id, status: "error" });
+    return NextResponse.json({ task_id: params.id, status: "error", error: String(e?.message || e).slice(0, 500) });
   }
 }
