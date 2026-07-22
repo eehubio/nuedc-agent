@@ -180,6 +180,7 @@ data/seed-modules.json    10 个种子模块（MSPM0/K230/TB6612/MPU6050/TPS5430
 ## 路线图（对应设计文档分期）
 
 - **一期（本仓库已实现）**：总控编排、赛题理解、题目预测、模块知识库、方案生成（含接口预检）、接口检查、BOM 整理、备料规划、代码生成（模块级）、调试助手、报告生成、模块上传审批、付费门控、ezPLM 嵌入
+- **一期补充 II（已实现）**：全产物版本化持久化（requirements/solution/bom/接口检查/代码/测试计划/实测/得分/报告统一进 artifacts，版本递增；项目打开自动全量恢复，「我的项目」可查版本历史并一键恢复为最新）、方案变更自动级联失效（下游产物标 stale，各页横幅提醒重新生成）、build_jobs 真实编译（提交 MSPM0/STM32/ESP32 任务，GitHub Actions 每 30 分钟巡队列用 arm-none-eabi-gcc 真实编译，回写日志/Flash/RAM/ELF/BIN，成功自动晋级 COMPILED；本地 `BASE_URL=... ADMIN_API_KEY=... npm run build:runner` 亦可执行）、全 API owner 校验（项目/产物/报告/任务/编译均校验归属，legacy 无主项目已由迁移归属 admin:legacy 仅管理员可见）、agent_tasks 任务层（与 agent_runs 执行日志分离；幂等键防重复扣费、取消、重试、刷新页面自动续跑未完成任务）、评分口径分离（scoring_items 仅取自题面：官方分值按需求关联精确计算，无官方分值时明示为 60+40 估算口径）、lint 接入 CI
 - **一期补充（已实现）**：Agent 异步任务（POST /api/agent-runs → run_id，waitUntil 后台执行 + 前端轮询，慢 Agent 不再受 120s 长请求限制）、版本化数据库迁移（lib/migrations.ts + schema_migrations 表，db:init 与运行时只补跑缺失迁移）、模块硬件版本拆分（module_revisions 独立表 + /api/modules/:id/revisions + 后台版本记录区）、参数证据等级（E0 AI 推断 → E6 多实验室复验；晋级 BENCHMARKED/COMPETITION_READY 强制要求 ≥1 条 E5 实测证据，推荐 Agent 优先引用高证据参数）、项目按用户隔离（ezPLM 传 X-User-Id 或匿名 cookie，各自只见自己的项目）、首页项目驾驶舱与比赛倒计时
 - **二期**：真实编译流水线（CI 安装 arm-none-eabi-gcc/CCS CLI 编译后回写 `code_verifier` 的 external_status；ci.yml 已留注释位）、ezPLM SSO 正式账号体系（organization/membership/项目角色）、LabSight 仪器接入、SSE 推送替代轮询、报告分章节编辑
 - **三期**：淘宝商品自动采集与 AI 芯片识别、模块知识图谱（依赖/替换/兼容/历届题目关系）、Word/PDF/LaTeX 报告导出、付费模块市场结算

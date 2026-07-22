@@ -165,3 +165,28 @@ describe("证据等级 schema", () => {
     expect(evidenceRecordSchema.safeParse({ param: "x", value: 1, evidence_level: "E9" }).success).toBe(false);
   });
 });
+
+describe("官方分值 vs 估算分值", () => {
+  const req2 = (id: string, pri: "mandatory" | "bonus" = "mandatory"): Requirement => ({
+    id, type: "performance", description: "d", target: 2, unit: "V", tolerance: "±1%",
+    priority: pri, source: "s", verification_method: "measurement", status: "CONFIRMED",
+  });
+  it("题面官方分值：按关联需求判定，未测计入上限", () => {
+    const reqs = [req2("REQ-001"), req2("REQ-002")];
+    const items = [
+      { item: "幅度测量", points: 30, points_type: "official" as const, requirement_ids: ["REQ-001"] },
+      { item: "相位测量", points: 20, points_type: "official" as const, requirement_ids: ["REQ-002"] },
+    ];
+    const { summary } = computeScore(reqs, [{ requirement_id: "REQ-001", measured_value: 2 }], items);
+    expect(summary.score_basis).toBe("official");
+    expect(summary.official_total).toBe(50);
+    expect(summary.score_low).toBe(30);     // 通过项
+    expect(summary.score_high).toBe(50);    // 未测项计入上限
+  });
+  it("无官方分值 → 估算口径", () => {
+    const { summary } = computeScore([req2("REQ-001")], [], [
+      { item: "x", points: null, points_type: "estimated" as const, requirement_ids: ["REQ-001"] },
+    ]);
+    expect(summary.score_basis).toBe("estimated");
+  });
+});

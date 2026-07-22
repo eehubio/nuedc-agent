@@ -6,7 +6,7 @@
     "app/api/report/route.ts": {
       "maxDuration": 120
     },
-    "app/api/agent-runs/[id]/execute/route.ts": {
+    "app/api/agent-tasks/[id]/execute/route.ts": {
       "maxDuration": 300
     }
   }

@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { callAgent, api, getEmbedParams, emitToEzplm } from "./api";
+import { callAgent, api, getEmbedParams, emitToEzplm, pollTask, cancelActiveTask } from "./api";
 import { HomePage, ModulesPage, ProjectsPage } from "./pages-core";
 import { SolutionPage, WiringPage, CodePage, DebugPage, ReportPage } from "./pages-build";
 import { BomPage, TestingPage } from "./pages-work";
@@ -67,6 +67,7 @@ export default function Platform({ embed }: { embed: boolean }) {
   const [testPlan, setTestPlan] = useState<any>(null);
   const [testRecords, setTestRecords] = useState<any[]>([]);
   const [testResult, setTestResult] = useState<any>(null);           // verdicts + summary
+  const [staleTypes, setStaleTypes] = useState<string[]>([]);        // 方案变更后过期的产物类型
   const [shortlist, setShortlist] = useState<string[]>([]); // 模块选型页「选用」的备选模块
 
   const say = useCallback((who: Msg["who"], text: string) => {
@@ -81,18 +82,43 @@ export default function Platform({ embed }: { embed: boolean }) {
   }, []);
   useEffect(() => {
     if (!projectId) return;
-    api(`/api/projects/${projectId}`).then((d) => {
+    api(`/api/projects/${projectId}`).then(async (d) => {
+      if (d.error) { say("agent", `项目加载失败：${d.error}`); return; }
       if (d.project) {
         setStage(String(d.project.stage));
         if (d.project.problem_text) setProblemText(String(d.project.problem_text));
       }
-      for (const a of d.artifacts || []) {
-        if (a.type === "requirements") setRequirements((v: any) => v ?? a.content);
-        if (a.type === "solution_proposal") setSolutions((v: any) => v ?? a.content);
-        if (a.type === "bom") setBom((v: any) => v ?? a.content);
-        if (a.type === "report") setReport((v: any) => v ?? a.content);
+      // 从每类最新产物全量恢复（刷新不丢工作）
+      const L: Record<string, any> = {};
+      for (const a of d.latest || []) L[a.type] = a;
+      if (L.requirements) setRequirements(L.requirements.content);
+      if (L.solution_proposal) setSolutions(L.solution_proposal.content);
+      if (L.solution) setChosenSolution(L.solution.content);
+      if (L.bom) setBom(L.bom.content);
+      if (L.integration_report) setWiringReport(L.integration_report.content);
+      if (L.code_bundle) setCodeBundle(L.code_bundle.content);
+      if (L.test_plan) setTestPlan(L.test_plan.content);
+      if (L.test_record) setTestRecords(L.test_record.content?.records || []);
+      if (L.score) setTestResult(L.score.content);
+      if (L.report) setReport(L.report.content);
+      setStaleTypes((d.latest || []).filter((a: any) => a.status === "stale").map((a: any) => a.type));
+      // 活动任务续跑：刷新页面不中断
+      const t = await api(`/api/agent-tasks?project_id=${projectId}&active=1`);
+      const task = t.tasks?.[0];
+      if (task) {
+        say("agent", `检测到未完成的任务（${task.agent_type}），继续等待结果……`);
+        setBusy(true);
+        const r: any = await pollTask(String(task.task_id), task.status === "queued");
+        setBusy(false);
+        if (r.ok) {
+          if (r.agent === "solution_architect") setSolutions(r.output);
+          if (r.agent === "code_generator") setCodeBundle(r.output);
+          if (r.agent === "report_composer") setReport(r.output);
+          say("agent", "此前的任务已完成，结果已就位。");
+        } else say("agent", `此前的任务未成功：${r.message || ""}`);
       }
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
   // ---- ezPLM → 智能体 消息桥 ----
@@ -193,6 +219,24 @@ export default function Platform({ embed }: { embed: boolean }) {
     });
   }
 
+  // 需求编辑持久化（1.5s 防抖存为新版本）
+  useEffect(() => {
+    if (!projectId || !requirements) return;
+    const t = setTimeout(() => {
+      api(`/api/projects/${projectId}/artifacts`, { method: "POST", body: JSON.stringify({ type: "requirements", content: requirements }) });
+    }, 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requirements]);
+
+  const DOWNSTREAM = ["integration_report", "bom", "procurement_plan", "code_bundle", "code_verification", "test_plan", "test_record", "score", "test_report", "report"];
+  async function persistSolution(sol: any) {
+    if (!projectId) return;
+    await api(`/api/projects/${projectId}/artifacts`, { method: "POST", body: JSON.stringify({ type: "solution", content: sol }) });
+    setStaleTypes(DOWNSTREAM);   // 服务端已级联标记，本地同步横幅
+  }
+  function unstale(...types: string[]) { setStaleTypes((s) => s.filter((t) => !types.includes(t))); }
+
   // ============ 方案编辑动作 ============
   async function replaceBlock(solutionId: string, blockId: string, mod: any) {
     const apply = (sol: any) => sol.solution_id !== solutionId ? sol : {
@@ -221,7 +265,8 @@ export default function Platform({ embed }: { embed: boolean }) {
         setSolutions((ss: any) => ss ? { ...ss, solutions: ss.solutions.map(attach) } : ss);
         setChosenSolution((c: any) => c ? attach(c) : c);
         setBackupSolution((c: any) => c ? attach(c) : c);
-        if (chosenSolution?.solution_id === solutionId) setWiringReport(r.output);
+        if (chosenSolution?.solution_id === solutionId) { setWiringReport(r.output); unstale("integration_report"); }
+        if (target && chosenSolution?.solution_id === solutionId) persistSolution({ ...target, integration_precheck: r.output });
         say("agent", `已把模块替换为「${mod.name}」并重跑接口检查：${r.output.passed ? "通过 ✓" : `发现 ${r.output.issues.filter((i: any) => i.severity === "blocker").length} 个阻断项`}`);
       }
     }
@@ -245,17 +290,17 @@ export default function Platform({ embed }: { embed: boolean }) {
     if (!requirements) return { ok: false, message: "请先完成需求确认" } as any;
     setBusy(true);
     if (projectId && ["BOM_CONFIRMED", "HARDWARE_BUILD", "SOFTWARE_BUILD", "INTEGRATION"].includes(stage)) await advanceStage("TESTING");
-    const r = await callAgent("test_scoring", { requirements, records: testRecords }, projectId);
+    const r = await callAgent("test_scoring", { requirements, records: testRecords, project_id_for_artifacts: projectId }, projectId);
     setBusy(false);
-    if (r.ok) { setTestPlan(r.output.plan); setTestResult(r.output); }
+    if (r.ok) { setTestPlan(r.output.plan); setTestResult(r.output); unstale("test_plan", "test_report", "score"); }
     return r;
   }
   async function runScore(records: any[]) {
     setTestRecords(records);
     setBusy(true);
-    const r = await callAgent("test_scoring", { requirements, records, existing_plan: testPlan, generate_plan: false }, projectId);
+    const r = await callAgent("test_scoring", { requirements, records, existing_plan: testPlan, generate_plan: false, project_id_for_artifacts: projectId }, projectId);
     setBusy(false);
-    if (r.ok) setTestResult(r.output);
+    if (r.ok) { setTestResult(r.output); unstale("test_record", "score"); }
     return r;
   }
 
@@ -289,6 +334,7 @@ export default function Platform({ embed }: { embed: boolean }) {
 
   async function approveSolution(sol: any) {
     setChosenSolution(sol);
+    persistSolution(sol);
     const pre = sol.integration_precheck;
     say("agent", `已确认方案 ${sol.solution_id}「${sol.name}」。接口预检${pre?.passed ? "通过 ✓" : `发现 ${pre?.issues?.filter((i: any) => i.severity === "blocker").length ?? 0} 个阻断项`}` +
       (pre?.passed ? "，可以进入模块 BOM 和代码生成。" : "，请到「电路连线」页处理后再进代码生成。"));
@@ -301,7 +347,7 @@ export default function Platform({ embed }: { embed: boolean }) {
     setBusy(true);
     const r = await callAgent("integration_checker", { solution: chosenSolution }, projectId);
     setBusy(false);
-    if (r.ok) setWiringReport(r.output);
+    if (r.ok) { setWiringReport(r.output); unstale("integration_report"); }
     return r;
   }
 
@@ -312,6 +358,7 @@ export default function Platform({ embed }: { embed: boolean }) {
     setBusy(false);
     if (r.ok) {
       setBom(r.output);
+      unstale("bom", "procurement_plan");
       if (projectId) await advanceStage("BOM_CONFIRMED");
       emitToEzplm("bom_ready", r.output);
     }
@@ -334,7 +381,7 @@ export default function Platform({ embed }: { embed: boolean }) {
     if (projectId && stage === "SOLUTION_APPROVED") await advanceStage("BOM_CONFIRMED");
     const r = await callAgent("code_generator", { solution: chosenSolution, target_module: target }, projectId);
     setBusy(false);
-    if (r.ok) setCodeBundle(r.output);
+    if (r.ok) { setCodeBundle(r.output); unstale("code_bundle", "code_verification"); }
     return r;
   }
 
@@ -363,7 +410,7 @@ export default function Platform({ embed }: { embed: boolean }) {
       debug_notes: opts.includeDebug && debugSession ? [debugSession.symptom] : [],
     }, projectId);
     setBusy(false);
-    if (r.ok) { setReport(r.output); emitToEzplm("report_ready", { project_id: projectId }); }
+    if (r.ok) { setReport(r.output); unstale("report"); emitToEzplm("report_ready", { project_id: projectId }); }
     return r;
   }
 
@@ -392,7 +439,7 @@ export default function Platform({ embed }: { embed: boolean }) {
     params, busy, stage, stageIdx, projectId, projects, setProjectId, resetProject,
     problemText, setProblemText, requirements, solutions, chosenSolution,
     wiringReport, bom, codeBundle, debugSession, report, modules, shortlist, setShortlist,
-    backupSolution, testPlan, testRecords, testResult,
+    backupSolution, testPlan, testRecords, testResult, staleTypes,
     msgs, chat, runInterpret, runSolution, approveSolution, runWiringCheck,
     runBomFromSolution, runBomFromText, runCode, runDebug, runReport, startFromDirection,
     updateRequirement, setReqStatus, confirmAllExtracted, addRequirement,
@@ -429,7 +476,7 @@ export default function Platform({ embed }: { embed: boolean }) {
       <div className="workarea">
         <header className="topbar">
           <h1>{PAGE_TITLE[page]}</h1>
-          <span className="crumb">{busy ? <><span className="spinner" /> 智能体运行中…</> : ""}</span>
+          <span className="crumb">{busy ? <><span className="spinner" /> 智能体运行中… <button className="btn ghost sm" onClick={() => cancelActiveTask()}>取消</button></> : ""}</span>
           <select value={projectId || ""} onChange={(e) => setProjectId(e.target.value || null)} aria-label="选择项目">
             <option value="">— 选择项目 —</option>
             {projects.map((p) => <option key={p.project_id} value={p.project_id}>{p.name}</option>)}

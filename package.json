@@ -11,7 +11,9 @@
     "db:seed": "tsx scripts/seed.mts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "next lint",
+    "build:runner": "tsx scripts/build-runner.mts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
@@ -24,6 +26,8 @@
     "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^14.2.35",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^4.1.10"

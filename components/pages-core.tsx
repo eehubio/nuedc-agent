@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PREP_TASKS, KNOWLEDGE_POINTS, TYPICAL_DIRECTIONS, FEATURES, COMPETITION_DATE, COMPETITION_NAME } from "../data/prep-content";
 import { CATEGORY_TREE, CAT_ICON, categoryLabel } from "../data/categories";
 import { STAGES, STAGE_LABEL } from "./Platform";
@@ -215,19 +215,55 @@ export function ModulesPage({ ctx }: { ctx: any }) {
 }
 
 /* ================= 我的项目 ================= */
+function ArtifactHistory({ projectId, onRestored }: { projectId: string; onRestored: () => void }) {
+  const [rows, setRows] = useState<any[]>([]);
+  useEffect(() => {
+    fetch(`/api/projects/${projectId}`).then((r) => r.json()).then((d) => setRows(d.artifacts || []));
+  }, [projectId]);
+  const TYPE_CN: Record<string, string> = {
+    requirements: "需求", solution_proposal: "候选方案", solution: "确认方案", bom: "BOM",
+    integration_report: "接口检查", code_bundle: "代码", code_verification: "代码验证",
+    test_plan: "测试计划", test_record: "实测记录", score: "得分", test_report: "测试汇总", report: "报告",
+  };
+  async function restore(a: any) {
+    const r = await fetch(`/api/projects/${projectId}/artifacts/${a.artifact_id}/restore`, { method: "POST" }).then((x) => x.json());
+    if (r.version) { onRestored(); }
+  }
+  return (
+    <table className="data" style={{ marginTop: 8 }}>
+      <thead><tr><th>产物</th><th>版本</th><th>状态</th><th>来源</th><th>时间</th><th></th></tr></thead>
+      <tbody>
+        {rows.slice(0, 30).map((a) => (
+          <tr key={a.artifact_id}>
+            <td>{TYPE_CN[a.type] || a.type}</td><td>v{a.version}</td>
+            <td>{a.status === "stale" ? <span className="chip gold">已过期</span> : a.status}</td>
+            <td className="hint">{a.created_by}</td>
+            <td className="hint">{String(a.created_at).slice(5, 16).replace("T", " ")}</td>
+            <td><button className="btn ghost sm" onClick={() => restore(a)}>恢复为最新</button></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 export function ProjectsPage({ ctx }: { ctx: any }) {
+  const [historyOf, setHistoryOf] = useState<string | null>(null);
   return (
     <div className="grid cols-2">
       {ctx.projects.map((p: any) => {
         const idx = STAGES.indexOf(p.stage);
         return (
           <div key={p.project_id} className="card">
-            <h3>{p.name}<span className="more" onClick={() => { ctx.setProjectId(p.project_id); ctx.setPage("solution"); }}>打开 →</span></h3>
+            <h3>{p.name}
+              <span className="more" onClick={() => setHistoryOf(historyOf === p.project_id ? null : p.project_id)}>{historyOf === p.project_id ? "收起历史" : "版本历史"}</span>
+              <span className="more" onClick={() => { ctx.setProjectId(p.project_id); ctx.setPage("solution"); }}>打开 →</span></h3>
             <p className="hint">阶段：{STAGE_LABEL[p.stage] || p.stage} · 更新于 {String(p.updated_at).slice(0, 10)}</p>
             <div className="progress"><i style={{ width: `${((idx + 1) / STAGES.length) * 100}%` }} /></div>
             <div className="hint" style={{ display: "flex", justifyContent: "space-between" }}>
               <span>备赛</span><span>方案</span><span>开发</span><span>测试</span><span>提交</span>
             </div>
+            {historyOf === p.project_id && <ArtifactHistory projectId={p.project_id} onRestored={() => { if (ctx.projectId === p.project_id) ctx.setProjectId(p.project_id); }} />}
           </div>
         );
       })}

@@ -1,6 +1,11 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 
+export function StaleBanner({ ctx, types, label }: { ctx: any; types: string[]; label: string }) {
+  if (!types.some((t) => ctx.staleTypes?.includes(t))) return null;
+  return <div className="issue warning" style={{ display: "block", marginBottom: 12 }}>⚠ 主方案已变更，{label}可能已过期 —— 建议重新生成后再使用。</div>;
+}
+
 /* ============ 方案框图（SVG 自动布局）============
    输入：solution.blocks / connections。布局：输入类在左列、
    主控在中列、输出/通信在右列、电源在底行；连线按接口预检
@@ -190,6 +195,8 @@ export function WiringPage({ ctx }: { ctx: any }) {
   const rep = ctx.wiringReport || sol?.integration_precheck;
   if (!sol) return <div className="card"><p className="hint">请先在「方案生成」页确认一套方案，这里将展示它的连线表并运行接口 / 电源规则检查。</p></div>;
   return (
+    <>
+    <StaleBanner ctx={ctx} types={["integration_report"]} label="接口检查结果" />
     <div className="grid cols-2" style={{ alignItems: "start" }}>
       <div style={{ display: "grid", gap: 14 }}>
         <div className="card">
@@ -246,6 +253,7 @@ export function WiringPage({ ctx }: { ctx: any }) {
         <div className="issue info" style={{ marginTop: 12 }}>📐 原理图 / PCB 在线编辑为二期功能；当前阶段以连线级检查保证方案电气正确性。</div>
       </div>
     </div>
+    </>
   );
 }
 
@@ -254,10 +262,41 @@ export function CodePage({ ctx }: { ctx: any }) {
   const [target, setTarget] = useState("");
   const [active, setActive] = useState(0);
   const [err, setErr] = useState("");
+  const [buildJob, setBuildJob] = useState<any>(null);
+  const [building, setBuilding] = useState(false);
+
+  async function submitBuild(buildTarget: string) {
+    if (!ctx.codeBundle?.files?.length) return;
+    setBuilding(true);
+    const r = await fetch("/api/build-jobs", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ project_id: ctx.projectId, target: buildTarget, files: ctx.codeBundle.files }) }).then((x) => x.json());
+    if (!r.job_id) { setErr(r.error || "提交失败"); setBuilding(false); return; }
+    setBuildJob({ job_id: r.job_id, status: "queued" });
+    // 轮询直到终态（执行器在 CI / 本地跑）
+    const t0 = Date.now();
+    while (Date.now() - t0 < 40 * 60_000) {
+      await new Promise((rs) => setTimeout(rs, 5000));
+      const j = await fetch(`/api/build-jobs/${r.job_id}`).then((x) => x.json()).catch(() => null);
+      if (j?.status && !["queued", "running"].includes(j.status)) {
+        setBuildJob(j);
+        if (j.status === "success") {
+          await ctx.runVerify?.();   // 静态验证在前
+          await fetch("/api/agent", { method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ agent: "code_verifier", project_id: ctx.projectId,
+              input: { files: ctx.codeBundle.files, external_status: "COMPILED", external_evidence: `build_job:${j.job_id} flash=${j.flash_bytes}B ram=${j.ram_bytes}B` } }) });
+        }
+        break;
+      }
+      if (j) setBuildJob(j);
+    }
+    setBuilding(false);
+  }
   const b = ctx.codeBundle;
   const files = b?.files || [];
   const mcu = ctx.chosenSolution?.blocks?.find((bl: any) => /mcu|主控/i.test(`${bl.role} ${bl.name}`));
   return (
+    <>
+    <StaleBanner ctx={ctx} types={["code_bundle", "code_verification"]} label="生成的代码" />
     <div className="code-wrap">
       <div className="card">
         <h3>工程文件</h3>
@@ -315,6 +354,24 @@ export function CodePage({ ctx }: { ctx: any }) {
               </div>
             ))}
             {b.honest_note && <p className="hint" style={{ marginTop: 6 }}>{b.honest_note}</p>}
+            <div style={{ borderTop: "1px solid var(--line)", marginTop: 12, paddingTop: 10 }}>
+              <b style={{ fontSize: 13 }}>真实编译（build_jobs）</b>
+              <p className="hint">交叉编译由执行器完成（GitHub Actions 每 30 分钟巡队列，或本地 <code>npm run build:runner</code>）。成功后自动晋级 COMPILED 并给出 Flash/RAM。</p>
+              <div style={{ display: "flex", gap: 6 }}>
+                {["mspm0", "stm32", "esp32"].map((t) => (
+                  <button key={t} className="btn ghost sm" disabled={building} onClick={() => submitBuild(t)}>编译 {t.toUpperCase()}</button>
+                ))}
+              </div>
+              {buildJob && (
+                <div className="issue info" style={{ marginTop: 8, display: "block" }}>
+                  任务 {buildJob.job_id}：<b>{buildJob.status}</b>
+                  {building && <span className="spinner" style={{ marginLeft: 6 }} />}
+                  {buildJob.flash_bytes != null && <> · Flash {buildJob.flash_bytes}B / RAM {buildJob.ram_bytes}B</>}
+                  {buildJob.has_bin && <> · <a href={`/api/build-jobs/${buildJob.job_id}?bin=1`} download>下载 BIN</a></>}
+                  {buildJob.log && <details style={{ marginTop: 4 }}><summary>编译日志</summary><pre style={{ whiteSpace: "pre-wrap", fontSize: 11 }}>{buildJob.log}</pre></details>}
+                </div>
+              )}
+            </div>
             {b.unsupported_items?.length > 0 && (
               <div className="issue warning">以下内容无法可靠生成（不编造 API）：{b.unsupported_items.join("、")}</div>
             )}
@@ -322,6 +379,7 @@ export function CodePage({ ctx }: { ctx: any }) {
         )}
       </div>
     </div>
+    </>
   );
 }
 

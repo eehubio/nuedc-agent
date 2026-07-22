@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import { emitToEzplm } from "./api";
+import { StaleBanner } from "./pages-build";
 
 /* ============ BOM 工作台 ============ */
 const PROC_STATUS = ["待采购", "已下单", "已到货", "库存借用", "自制"] as const;
@@ -65,6 +66,7 @@ export function BomPage({ ctx }: { ctx: any }) {
 
   return (
     <>
+      <StaleBanner ctx={ctx} types={["bom", "procurement_plan"]} label="物料清单" />
       <div className="statsbar" style={{ marginBottom: 14 }}>
         <span><b>{items.length}</b> 行物料</span>
         <span><b style={{ color: shortage ? "var(--red)" : "var(--ok)" }}>{shortage}</b> 行缺料</span>
@@ -158,8 +160,10 @@ export function TestingPage({ ctx }: { ctx: any }) {
 
   return (
     <>
+      <StaleBanner ctx={ctx} types={["test_plan", "score", "test_report"]} label="测试计划与得分" />
       {sum && (
         <div className="statsbar" style={{ marginBottom: 14 }}>
+          <span className={"chip " + (sum.score_basis === "official" ? "green" : "gold")}>{sum.score_basis === "official" ? `官方分值 · 总分 ${sum.official_total}` : "估算口径 60+40"}</span>
           <span>基本要求 <b style={{ color: sum.blockers.length ? "var(--red)" : "var(--ok)" }}>{sum.mandatory_passed}/{sum.mandatory_total}</b></span>
           <span>发挥要求 <b>{sum.bonus_passed}/{sum.bonus_total}</b></span>
           <span>预计得分 <b>{sum.score_low} ~ {sum.score_high}</b></span>

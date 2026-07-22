@@ -11,7 +11,7 @@ registerAgent("test_scoring", async (input) => {
   const records: TestRecord[] = input.records || [];
 
   // 判定与得分永远走规则，不管有没有 LLM
-  const { verdicts, summary } = computeScore(requirements, records);
+  const { verdicts, summary } = computeScore(requirements, records, input.requirements?.scoring_items || input.scoring_items);
 
   // 测试计划：每条需求 → 仪器/测点/步骤/判据（只在首次或明确要求时生成）
   let plan: any = input.existing_plan || null;
@@ -38,6 +38,14 @@ registerAgent("test_scoring", async (input) => {
     } catch { plan = { test_cases: [], note: "测试计划生成失败，判定与得分不受影响" }; }
   }
 
+  // 拆分产物：计划 / 实测记录 / 得分 各自独立版本化
+  if (input.project_id_for_artifacts) {
+    const { saveArtifact } = await import("../artifacts");
+    const pid = input.project_id_for_artifacts;
+    if (plan?.test_cases?.length) await saveArtifact({ projectId: pid, type: "test_plan", content: plan, createdBy: "test_scoring" });
+    if (records.length) await saveArtifact({ projectId: pid, type: "test_record", content: { records }, createdBy: "test_scoring" });
+    await saveArtifact({ projectId: pid, type: "score", content: { verdicts, summary }, createdBy: "test_scoring" });
+  }
   return {
     ok: true,
     artifact_type: "test_report",

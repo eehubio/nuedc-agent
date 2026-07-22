@@ -8,7 +8,6 @@ import { neon } from "@neondatabase/serverless";
 
 type Stmt = string | { sql: string; args?: unknown[] };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _sql: any = null;
 
 function conn() {

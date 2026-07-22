@@ -21,6 +21,14 @@ export interface TestVerdict {
   detail: string;
 }
 
+export interface ScoringItem {
+  item: string;
+  points: number | null;
+  points_type: "official" | "estimated";
+  requirement_ids: string[];
+  source?: string;
+}
+
 export interface ScoreSummary {
   mandatory_total: number;
   mandatory_passed: number;
@@ -28,7 +36,9 @@ export interface ScoreSummary {
   bonus_passed: number;
   untested: number;
   blockers: string[];                 // 未通过的基本要求
-  score_low: number;                  // 预计得分区间（百分制，规则估算）
+  score_basis: "official" | "estimated";   // 分值口径：题面官方分值 / 60+40 结构估算
+  official_total?: number;                 // 官方口径时的题面总分
+  score_low: number;                  // 预计得分区间
   score_high: number;
   next_best_actions: string[];        // 收益最高的下一步（规则生成）
 }
@@ -98,7 +108,7 @@ export function judge(req: Requirement, rec?: TestRecord): TestVerdict {
   return { requirement_id: rid, auto_evaluable: false, passed: null, detail: "指标非数值，需人工判定" };
 }
 
-export function computeScore(requirements: Requirement[], records: TestRecord[]): { verdicts: TestVerdict[]; summary: ScoreSummary } {
+export function computeScore(requirements: Requirement[], records: TestRecord[], scoringItems?: ScoringItem[]): { verdicts: TestVerdict[]; summary: ScoreSummary } {
   const active = requirements.filter((r) => r.status !== "REJECTED");
   const recMap = new Map(records.map((r) => [r.requirement_id, r]));
   const verdicts = active.map((r) => judge(r, recMap.get(r.id)));
@@ -111,7 +121,36 @@ export function computeScore(requirements: Requirement[], records: TestRecord[])
   const untested = verdicts.filter((v) => v.passed === null).length;
   const blockers = mand.filter((r) => vMap.get(r.id)?.passed === false).map((r) => `${r.id} ${r.description.slice(0, 24)}`);
 
-  // 电赛通行结构：基本要求约 60 分、发挥约 40 分（估算区间，未测项按“低=不得分/高=得分”展开）
+  // ---- 官方口径：题面明示分值 + requirement 关联 ----
+  const official = (scoringItems || []).filter((s) => s.points_type === "official" && typeof s.points === "number" && s.requirement_ids?.length);
+  if (official.length) {
+    const total = official.reduce((a, s) => a + (s.points as number), 0);
+    let low = 0, high = 0;
+    for (const item of official) {
+      const linked = item.requirement_ids.map((id) => vMap.get(id)).filter(Boolean);
+      if (!linked.length) { high += item.points as number; continue; }   // 未关联到判定 → 视为未测
+      const passed = linked.filter((v) => v!.passed === true).length;
+      const failed = linked.filter((v) => v!.passed === false).length;
+      const frac = passed / linked.length;
+      low += (item.points as number) * frac;
+      high += (item.points as number) * (failed ? frac : 1);             // 未测部分计入上限
+    }
+    return {
+      verdicts,
+      summary: {
+        mandatory_total: mand.length, mandatory_passed: mp,
+        bonus_total: bonus.length, bonus_passed: bp,
+        untested, blockers,
+        score_basis: "official", official_total: total,
+        score_low: Math.round(low), score_high: Math.round(Math.min(total, high)),
+        next_best_actions: blockers.length ? [`优先修复未通过的基本要求：${blockers[0]}`]
+          : untested ? [`还有 ${untested} 项未测，按官方分值口径它们决定得分上限`]
+          : ["全部通过 —— 按官方评分表整理测试证据进报告"],
+      },
+    };
+  }
+
+  // ---- 估算口径：电赛通行结构 基本约 60 / 发挥约 40 ----
   const mandScore = mand.length ? (mp / mand.length) * 60 : 0;
   const bonusScore = bonus.length ? (bp / bonus.length) * 40 : 0;
   const mandUntested = mand.filter((r) => vMap.get(r.id)?.passed === null).length;
@@ -132,6 +171,7 @@ export function computeScore(requirements: Requirement[], records: TestRecord[])
       mandatory_total: mand.length, mandatory_passed: mp,
       bonus_total: bonus.length, bonus_passed: bp,
       untested, blockers,
+      score_basis: "estimated",
       score_low: Math.round(mandScore + bonusScore),
       score_high: Math.round(Math.min(100, high)),
       next_best_actions: actions,

@@ -12,7 +12,7 @@ registerAgent("problem_interpreter", async (input) => {
   const out = await llmJson<{
     title: string;
     requirements: Requirement[];
-    scoring_items: { item: string; points?: number; source: string }[];
+    scoring_items: { item: string; points: number | null; points_type: "official" | "estimated"; requirement_ids: string[]; source: string }[];
     system_inputs: string[];
     system_outputs: string[];
     ambiguities: string[];
@@ -26,7 +26,10 @@ registerAgent("problem_interpreter", async (input) => {
 5. 逐条标注 source（引用赛题原文对应条目，尽量保留原文表述）
 5b. 每条需求 status 字段：确定无歧义的填 "AI_EXTRACTED"，题面表述含糊的填 "AMBIGUOUS"
 6. 不确定或有歧义的地方放入 ambiguities，不要擅自补全
-7. 识别系统输入（被测/被控对象、传感来源）与输出（执行、显示、通信）`,
+7. 识别系统输入（被测/被控对象、传感来源）与输出（执行、显示、通信）
+8. scoring_items 只能来自题面评分表：题面明确写出分值的填 points 且 points_type="official"；
+   题面有评分项但未写分值的 points=null 且 points_type="estimated"；禁止编造分值。
+   每个评分项用 requirement_ids 关联到对应的 REQ 编号`,
     messages: [{ role: "user", content: `赛题原文：\n\n${problemText}` }],
     maxTokens: 4096,
   });

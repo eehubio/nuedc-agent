@@ -75,3 +75,20 @@ export function withOwnerCookie<T extends NextResponse>(res: T, owner: string, i
   }
   return res;
 }
+
+
+/** 项目访问校验：本人（owner 匹配）或 admin。lab 视为运维不默认放行项目数据。
+ *  返回 null = 放行；返回 NextResponse = 直接作为响应返回。 */
+export async function assertProjectAccess(req: NextRequest, projectId: string): Promise<NextResponse | null> {
+  const { db, ensureSchema } = await import("./db");
+  await ensureSchema();
+  const tier = resolveTier(req);
+  if (tier === "admin") return null;
+  const rs = await db().execute({ sql: "SELECT owner FROM projects WHERE project_id=?", args: [projectId] });
+  if (!rs.rows.length) return NextResponse.json({ error: "项目不存在" }, { status: 404 });
+  const { owner } = resolveOwner(req);
+  if (String(rs.rows[0].owner) !== owner) {
+    return NextResponse.json({ error: "无权访问该项目" }, { status: 403 });
+  }
+  return null;
+}

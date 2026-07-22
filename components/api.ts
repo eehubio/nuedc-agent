@@ -31,23 +31,11 @@ export async function callAgent(agent: string, input: any, projectId: string | n
     const headers = { "content-type": "application/json" };
 
     if (ASYNC_AGENTS.has(agent)) {
-      const res = await fetch("/api/agent-runs", { method: "POST", headers, body });
+      const idem = `${agent}:${projectId || "np"}:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      const res = await fetch("/api/agent-tasks", { method: "POST", headers, body: JSON.stringify({ agent, input, project_id: projectId, idempotency_key: idem }) });
       const start = await safeJson(res);
-      if (!res.ok || !start.run_id) return { ok: false, output: null, message: start.error || `启动失败 HTTP ${res.status}` };
-      // 点火：执行请求由浏览器保持，普通函数内同步跑完（不依赖平台后台机制）
-      const ignite = () => fetch(`/api/agent-runs/${start.run_id}/execute`, { method: "POST", keepalive: true }).catch(() => {});
-      ignite();
-      const t0 = Date.now();
-      let reIgnited = false;
-      while (Date.now() - t0 < 300_000) {
-        await new Promise((r) => setTimeout(r, Date.now() - t0 < 20_000 ? 1500 : 3000));
-        const st = await fetch(`/api/agent-runs/${start.run_id}`).then(safeJson).catch(() => null);
-        if (!st || st.error) continue;
-        if (st.status === "ok") return st.result as AgentResult;
-        if (st.status === "error") return (st.result as AgentResult) || { ok: false, output: null, message: st.error || "运行失败" };
-        if (st.status === "queued" && !reIgnited && Date.now() - t0 > 12_000) { reIgnited = true; ignite(); }
-      }
-      return { ok: false, output: null, message: `任务超时。运行编号 ${start.run_id}，可到 Vercel Runtime Logs 查看该请求日志。` };
+      if (!res.ok || !start.task_id) return { ok: false, output: null, message: start.error || `启动失败 HTTP ${res.status}` };
+      return pollTask(start.task_id, true);
     }
 
     const res = await fetch("/api/agent", { method: "POST", headers, body });
@@ -57,6 +45,34 @@ export async function callAgent(agent: string, input: any, projectId: string | n
   } catch (e: any) {
     return { ok: false, output: null, message: `请求失败：${e?.message || e}` };
   }
+}
+
+let _activeTask: string | null = null;
+export function activeTaskId() { return _activeTask; }
+export async function cancelActiveTask() {
+  if (!_activeTask) return;
+  await fetch(`/api/agent-tasks/${_activeTask}/cancel`, { method: "POST" }).catch(() => {});
+}
+
+/** 轮询任务直到终态。ignite=true 时先点火；页面刷新恢复时 ignite=false（可能已在跑）。 */
+export async function pollTask(taskId: string, ignite: boolean): Promise<AgentResult & { agent?: string }> {
+  _activeTask = taskId;
+  const fire = () => fetch(`/api/agent-tasks/${taskId}/execute`, { method: "POST", keepalive: true }).catch(() => {});
+  if (ignite) fire();
+  const t0 = Date.now();
+  let reIgnited = false;
+  try {
+    while (Date.now() - t0 < 300_000) {
+      await new Promise((r) => setTimeout(r, Date.now() - t0 < 20_000 ? 1500 : 3000));
+      const st = await fetch(`/api/agent-tasks/${taskId}`).then(safeJson).catch(() => null);
+      if (!st || st.error && !st.status) continue;
+      if (st.status === "ok") return { ...(st.result as AgentResult), agent: st.agent };
+      if (st.status === "canceled") return { ok: false, output: null, message: "任务已取消", agent: st.agent };
+      if (st.status === "error") return (st.result && { ...(st.result as AgentResult), agent: st.agent }) || { ok: false, output: null, message: st.error || "运行失败", agent: st.agent };
+      if (st.status === "queued" && !reIgnited && Date.now() - t0 > 12_000) { reIgnited = true; fire(); }
+    }
+    return { ok: false, output: null, message: `任务超时。任务编号 ${taskId}` };
+  } finally { _activeTask = null; }
 }
 
 export async function api(path: string, init?: RequestInit) {

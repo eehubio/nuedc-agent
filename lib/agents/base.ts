@@ -53,19 +53,12 @@ export async function runAgent(
   try {
     const result = await fn(input, ctx);
     await logRun(runId, ctx, type, input, result, Date.now() - t0, "ok");
-    // Artifact 落库，形成可追踪版本历史
+    // Artifact 落库：版本递增 + 方案变更自动级联失效下游
     if (result.ok && result.artifact_type) {
-      await db().execute({
-        sql: `INSERT INTO artifacts (artifact_id, project_id, type, status, created_by, content)
-              VALUES (?, ?, ?, ?, ?, ?)`,
-        args: [
-          uid("ART"),
-          ctx.projectId,
-          result.artifact_type,
-          result.human_review_required ? "draft" : "reviewed",
-          type,
-          JSON.stringify(result.output),
-        ],
+      const { saveArtifact } = await import("../artifacts");
+      await saveArtifact({
+        projectId: ctx.projectId, type: result.artifact_type, content: result.output,
+        createdBy: type, status: result.human_review_required ? "draft" : "reviewed",
       });
     }
     return { ...result, run_id: runId };

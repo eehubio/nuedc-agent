@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, ensureSchema } from "@/lib/db";
+import { assertProjectAccess } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export async function OPTIONS() { return new NextResponse(null, { status: 204 }); }
@@ -9,6 +10,8 @@ export async function GET(req: NextRequest) {
   await ensureSchema();
   const projectId = new URL(req.url).searchParams.get("project_id");
   if (!projectId) return NextResponse.json({ error: "缺少 project_id" }, { status: 400 });
+  const denied = await assertProjectAccess(req, projectId);
+  if (denied) return denied;
   const rs = await db().execute({
     sql: "SELECT content FROM artifacts WHERE project_id=? AND type='report' ORDER BY created_at DESC LIMIT 1",
     args: [projectId],

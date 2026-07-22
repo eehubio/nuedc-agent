@@ -36,6 +36,61 @@ CREATE TABLE IF NOT EXISTS module_revisions (
 CREATE INDEX IF NOT EXISTS idx_revisions_module ON module_revisions(module_id);
 `,
   },
+  {
+    id: 4,
+    name: "build_jobs",
+    sql: `
+CREATE TABLE IF NOT EXISTS build_jobs (
+  job_id TEXT PRIMARY KEY,
+  project_id TEXT,
+  target TEXT NOT NULL,
+  status TEXT DEFAULT 'queued',
+  files TEXT NOT NULL,
+  log TEXT,
+  flash_bytes INTEGER,
+  ram_bytes INTEGER,
+  elf_b64 TEXT,
+  bin_b64 TEXT,
+  claimed_by TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_build_project ON build_jobs(project_id);
+CREATE INDEX IF NOT EXISTS idx_build_status ON build_jobs(status);
+`,
+  },
+  {
+    id: 5,
+    name: "legacy_projects_to_admin",
+    sql: `
+UPDATE projects SET owner='admin:legacy' WHERE owner IS NULL;
+`,
+  },
+  {
+    id: 6,
+    name: "agent_tasks",
+    sql: `
+CREATE TABLE IF NOT EXISTS agent_tasks (
+  task_id TEXT PRIMARY KEY,
+  project_id TEXT,
+  agent_type TEXT NOT NULL,
+  status TEXT DEFAULT 'queued',
+  input TEXT,
+  output TEXT,
+  error TEXT,
+  tier TEXT DEFAULT 'free',
+  idempotency_key TEXT,
+  attempts INTEGER DEFAULT 0,
+  cancel_requested INTEGER DEFAULT 0,
+  last_run_id TEXT,
+  model TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_project ON agent_tasks(project_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idem ON agent_tasks(idempotency_key) WHERE idempotency_key IS NOT NULL;
+`,
+  },
 ];
 
 let applied = false;
