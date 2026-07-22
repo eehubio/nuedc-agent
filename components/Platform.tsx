@@ -46,6 +46,9 @@ export default function Platform({ embed }: { embed: boolean }) {
   const [page, setPage] = useState<PageKey>("home");
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projects, setProjects] = useState<any[]>([]);
+  const reloadProjects = useCallback(() => {
+    api("/api/projects").then((d) => setProjects(d.projects || []));
+  }, []);
   const [stage, setStage] = useState<string>("PREPARATION");
   const [busy, setBusy] = useState(false);
   const [msgs, setMsgs] = useState<Msg[]>([
@@ -76,7 +79,7 @@ export default function Platform({ embed }: { embed: boolean }) {
 
   // ---- 初始加载：项目列表 + 模块库 ----
   useEffect(() => {
-    api("/api/projects").then((d) => setProjects(d.projects || [])).catch(() => {});
+    reloadProjects();
     api(`/api/modules?tier=${params.tier}`).then((d) => setModules(d.modules || [])).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -143,7 +146,7 @@ export default function Platform({ embed }: { embed: boolean }) {
       }),
     });
     setProjectId(d.project_id);
-    api("/api/projects").then((r) => setProjects(r.projects || []));
+    reloadProjects();
     return d.project_id;
   }
 
@@ -283,6 +286,32 @@ export default function Platform({ embed }: { embed: boolean }) {
     setBackupSolution(prev);
     setWiringReport(backupSolution.integration_precheck || null);
     say("agent", `已切换到备用方案 ${backupSolution.solution_id}。原主方案转为备用。`);
+  }
+
+  // ============ 电源树编辑（修复电源类阻断项的正道）============
+  async function updatePowerRail(railName: string, patch: any) {
+    if (!chosenSolution) return;
+    const next = {
+      ...chosenSolution,
+      power_tree: (chosenSolution.power_tree || []).map((r: any) =>
+        r.rail === railName ? { ...r, ...patch } : r),
+      integration_precheck: undefined,
+    };
+    setChosenSolution(next);
+    setBusy(true);
+    const r = await callAgent("integration_checker", { solution: next }, projectId);
+    setBusy(false);
+    if (r.ok) {
+      setWiringReport(r.output);
+      const withCheck = { ...next, integration_precheck: r.output };
+      setChosenSolution(withCheck);
+      persistSolution(withCheck);
+      unstale("integration_report");
+      const blockers = (r.output.issues || []).filter((i: any) => i.severity === "blocker").length;
+      say("agent", blockers
+        ? `电源轨 ${railName} 已更新，仍有 ${blockers} 个阻断项待处理。`
+        : `电源轨 ${railName} 已更新，检查全部通过 ✓ 现在可以进入代码生成。`);
+    }
   }
 
   // ============ 测试评分动作 ============
@@ -444,14 +473,14 @@ export default function Platform({ embed }: { embed: boolean }) {
 
   const stageIdx = STAGES.indexOf(stage as any);
   const ctx = {
-    params, busy, stage, stageIdx, projectId, projects, setProjectId, resetProject,
+    params, busy, stage, stageIdx, projectId, projects, setProjectId, resetProject, reloadProjects,
     problemText, setProblemText, requirements, solutions, chosenSolution,
     wiringReport, bom, codeBundle, debugSession, report, modules, shortlist, setShortlist,
     backupSolution, testPlan, testRecords, testResult, staleTypes,
     msgs, chat, runInterpret, runSolution, approveSolution, runWiringCheck,
     runBomFromSolution, runBomFromText, runCode, runDebug, runReport, startFromDirection,
     updateRequirement, setReqStatus, confirmAllExtracted, addRequirement,
-    replaceBlock, markBackup, swapToBackup, runTestPlan, runScore, runVerify,
+    replaceBlock, markBackup, swapToBackup, runTestPlan, runScore, runVerify, updatePowerRail,
     setPage, advanceStage,
   };
 

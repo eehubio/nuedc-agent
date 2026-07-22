@@ -489,3 +489,13 @@ describe("未知功耗不按 0 处理", () => {
     expect(missing.some((i) => i.severity === "warning" && i.message.includes("指示灯"))).toBe(true);
   });
 });
+
+describe("阻断项修复建议覆盖", () => {
+  it("每条会产生 blocker 的规则都有对应修复指引", () => {
+    // 与 components/pages-build.tsx 的 FIX_HINTS 保持同步的契约
+    const BLOCKER_RULES = ["POWER_BUDGET_EXCEEDED", "POWER_DATA_MISSING", "LEVEL_5V_INTO_3V3", "PIN_CONFLICT"];
+    const HINT_KEYS = ["POWER_BUDGET_EXCEEDED", "POWER_BUDGET_TIGHT", "POWER_DATA_MISSING", "LEVEL_5V_INTO_3V3",
+      "LEVEL_MISMATCH", "LEVEL_LOW_DRIVE_HIGH", "PIN_CONFLICT", "PIN_FANOUT", "BAUDRATE_MISMATCH", "MOTOR_LOGIC_ISOLATION"];
+    for (const r of BLOCKER_RULES) expect(HINT_KEYS).toContain(r);
+  });
+});

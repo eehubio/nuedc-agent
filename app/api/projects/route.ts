@@ -11,9 +11,9 @@ export async function GET(req: NextRequest) {
   const tier = resolveTier(req);
   // 严格按 owner 隔离；admin 可见全部（存量无主项目已由迁移 005 归属 admin:legacy）
   const rs = tier === "admin"
-    ? await db().execute("SELECT project_id, name, stage, ezplm_project_id, owner, updated_at FROM projects ORDER BY updated_at DESC LIMIT 100")
+    ? await db().execute("SELECT project_id, name, stage, note, archived, ezplm_project_id, owner, updated_at FROM projects ORDER BY archived, updated_at DESC LIMIT 100")
     : await db().execute({
-        sql: "SELECT project_id, name, stage, ezplm_project_id, updated_at FROM projects WHERE owner=? ORDER BY updated_at DESC LIMIT 50",
+        sql: "SELECT project_id, name, stage, note, archived, ezplm_project_id, updated_at FROM projects WHERE owner=? ORDER BY archived, updated_at DESC LIMIT 50",
         args: [owner],
       });
   return withOwnerCookie(NextResponse.json({ projects: rs.rows }), owner, isNew);

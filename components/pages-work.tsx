@@ -9,10 +9,15 @@ const PROC_STATUS = ["待采购", "已下单", "已到货", "库存借用", "自
 export function BomPage({ ctx }: { ctx: any }) {
   const items: any[] = ctx.bom?.items || [];
   const [genErr, setGenErr] = useState("");
+  const [genMsg, setGenMsg] = useState("");
   async function genFromSolution() {
-    setGenErr("");
+    setGenErr(""); setGenMsg("正在解析方案并整理物料清单…");
     const r = await ctx.runBomFromSolution();
-    if (r && !r.ok) setGenErr(r.message || "生成失败");
+    setGenMsg("");
+    if (!r) { setGenErr("调用未返回结果（前端异常，请刷新页面重试）"); return; }
+    if (!r.ok) { setGenErr(r.message || "生成失败（原因未知）"); return; }
+    const n = r.output?.items?.length ?? 0;
+    if (!n) setGenErr("模型返回了空清单 —— 可能方案功能块信息不足，请重试或改用「粘贴文本/CSV 整理」");
   }
   // 本地工作台状态：库存数 / 采购状态（叠加在 BOM 之上，导出时合并）
   const [local, setLocal] = useState<Record<string, { stock: number; status: string }>>({});
@@ -71,7 +76,13 @@ export function BomPage({ ctx }: { ctx: any }) {
         <BomPaste ctx={ctx} />
       </div>
       {!ctx.chosenSolution && <p className="hint" style={{ marginTop: 8 }}>（从方案生成需要先在「方案生成」页确认一套方案）</p>}
+      {genMsg && <p className="hint" style={{ marginTop: 8 }}><span className="spinner" /> {genMsg}</p>}
       {genErr && <div className="issue blocker" style={{ marginTop: 10, display: "block" }}>生成失败：{genErr}</div>}
+      {!ctx.chosenSolution && (
+        <p className="hint" style={{ marginTop: 8 }}>
+          ⚠ 当前没有已确认的主方案，「从已确认方案生成」按钮不可用。请到「方案生成」页点某套方案的「采用为主方案」。
+        </p>
+      )}
     </div>
   );
 

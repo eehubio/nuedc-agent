@@ -4,6 +4,20 @@ import { PAST_PROBLEMS, PROBLEM_YEARS } from "../data/past-problems";
 
 /** 失效横幅：仅当「该产物已存在」且「被标记 stale」时显示。
  *  产物从未生成过时提示"已过期"没有意义，反而让人以为出错了。 */
+/** 各规则的可执行修复路径 —— 让"存在阻断项"变成"知道下一步做什么" */
+const FIX_HINTS: Record<string, string> = {
+  POWER_BUDGET_EXCEEDED: "① 在下方电源树把该轨预算改大（同时换用更大电流的 DC-DC/LDO）；② 或把大电流模块（视觉、电机）挪到独立电源轨；③ 或在方案页替换为更省电的模块。",
+  POWER_BUDGET_TIGHT: "建议留 20~30% 裕量：把该轨预算调大，或确认电源芯片实际输出能力。",
+  POWER_DATA_MISSING: "到「模块选型」打开该模块补录典型/峰值电流（功率类器件建议实测）。缺数据时预算无法核算。",
+  LEVEL_5V_INTO_3V3: "加电平转换芯片（如 TXS0108E）或分压电阻；也可在方案页替换为 5V 容忍的模块。",
+  LEVEL_MISMATCH: "确认接收端是否 5V 容忍；不确定就加电平转换或分压。",
+  LEVEL_LOW_DRIVE_HIGH: "核对接收端 VIH 阈值；不满足时加比较器/运放缓冲，或换电平匹配的模块。",
+  PIN_CONFLICT: "同一输入被多个源驱动：加多路选择开关（如 CD4051）、改用不同引脚，或在方案页替换模块。",
+  PIN_FANOUT: "通常无需处理；负载较重时核对驱动能力或加缓冲器。",
+  BAUDRATE_MISMATCH: "统一两端波特率，或在代码生成时明确指定。",
+  MOTOR_LOGIC_ISOLATION: "为电机单开一条动力轨（与逻辑电源分离），并加大电容/磁珠隔离。",
+};
+
 export function StaleBanner({ ctx, types, label, exists }: { ctx: any; types: string[]; label: string; exists?: boolean }) {
   if (exists === false) return null;
   if (!types.some((t) => ctx.staleTypes?.includes(t))) return null;
@@ -246,15 +260,27 @@ export function WiringPage({ ctx }: { ctx: any }) {
         </div>
         {sol.power_tree?.length > 0 && (
           <div className="card">
-            <h3>电源树</h3>
+            <h3>电源树 <span className="hint" style={{ fontWeight: 400 }}>预算可直接改 —— 电源类阻断多数靠调预算或换更大电源解决</span></h3>
             <table className="data">
-              <thead><tr><th>电源轨</th><th>电压</th><th>来源</th><th>负载</th><th>预算</th></tr></thead>
+              <thead><tr><th>电源轨</th><th>电压</th><th>来源</th><th>负载</th><th>预算 (mA)</th></tr></thead>
               <tbody>
                 {sol.power_tree.map((p: any) => (
-                  <tr key={p.rail}><td>{p.rail}</td><td>{p.voltage}V</td><td>{p.source}</td><td>{(p.loads || []).join("、")}</td><td>{p.budget_ma}mA</td></tr>
+                  <tr key={p.rail}>
+                    <td><b>{p.rail}</b></td><td>{p.voltage}V</td><td>{p.source}</td>
+                    <td className="hint">{(p.loads || []).join("、")}</td>
+                    <td>
+                      <input type="number" min={0} step={100} defaultValue={p.budget_ma} disabled={ctx.busy}
+                        style={{ width: 92, padding: 4, border: "1px solid var(--line)", borderRadius: 6 }}
+                        onBlur={(e) => {
+                          const v = Number(e.target.value);
+                          if (v && v !== p.budget_ma) ctx.updatePowerRail?.(p.rail, { budget_ma: v });
+                        }} />
+                    </td>
+                  </tr>
                 ))}
               </tbody>
             </table>
+            <p className="hint" style={{ marginTop: 6 }}>改完失去焦点即自动重跑规则检查。模块实际功耗未知时，请到「模块选型」补录典型/峰值电流。</p>
           </div>
         )}
       </div>
@@ -274,7 +300,9 @@ export function WiringPage({ ctx }: { ctx: any }) {
             {(rep.issues || []).map((is: any, i: number) => (
               <div key={i} className={"issue " + is.severity}>
                 <span className="tag">{is.severity === "blocker" ? "阻断" : is.severity === "warning" ? "警告" : "提示"}·{is.rule}</span>
-                <span>{is.message}<br /><span className="hint">{is.where}</span></span>
+                <span>{is.message}<br /><span className="hint">{is.where}</span>
+                  {FIX_HINTS[is.rule] && <><br /><span className="hint">🔧 怎么修：{FIX_HINTS[is.rule]}</span></>}
+                </span>
               </div>
             ))}
           </>

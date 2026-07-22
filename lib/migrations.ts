@@ -142,6 +142,14 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 CREATE INDEX IF NOT EXISTS idx_usage_owner_kind ON llm_usage(owner, kind, created_at);
 `,
   },
+  {
+    id: 9,
+    name: "project_notes_and_archive",
+    sql: `
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS note TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived INTEGER DEFAULT 0;
+`,
+  },
 ];
 
 let applied = false;

@@ -300,21 +300,67 @@ function SnapshotBar({ projectId }: { projectId: string }) {
 
 export function ProjectsPage({ ctx }: { ctx: any }) {
   const [historyOf, setHistoryOf] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [noting, setNoting] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+
+  async function patchProject(id: string, body: any) {
+    await fetch(`/api/projects/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    ctx.reloadProjects?.();
+  }
+  async function saveName(id: string, name: string) {
+    setEditing(null);
+    if (name.trim()) await patchProject(id, { name: name.trim() });
+  }
+  async function saveNote(id: string, note: string) {
+    setNoting(null);
+    await patchProject(id, { note });
+  }
+  async function toggleArchive(p: any) {
+    await patchProject(p.project_id, { archived: p.archived === 1 ? 0 : 1 });
+  }
+  async function remove(p: any) {
+    if (!confirm(`确定删除「${p.name}」？\n\n项目的所有产物、快照、任务与编译记录都会一并删除，无法恢复。`)) return;
+    await fetch(`/api/projects/${p.project_id}`, { method: "DELETE" });
+    if (ctx.projectId === p.project_id) ctx.setProjectId(null);
+    ctx.reloadProjects?.();
+  }
   return (
     <div className="grid cols-2">
       {ctx.projects.map((p: any) => {
         const idx = STAGES.indexOf(p.stage);
         return (
           <div key={p.project_id} className="card">
-            <h3>{p.name}
+            <h3 style={{ flexWrap: "wrap" }}>
+              {editing === p.project_id ? (
+                <input autoFocus defaultValue={p.name} style={{ flex: 1, padding: 5, border: "1px solid var(--line)", borderRadius: 6, font: "inherit" }}
+                  onKeyDown={(e) => { if (e.key === "Enter") saveName(p.project_id, (e.target as HTMLInputElement).value); if (e.key === "Escape") setEditing(null); }}
+                  onBlur={(e) => saveName(p.project_id, e.target.value)} />
+              ) : (
+                <>
+                  {p.name}
+                  {p.archived === 1 && <span className="chip" style={{ marginLeft: 6 }}>已归档</span>}
+                </>
+              )}
+              <span className="more" onClick={() => setEditing(p.project_id)}>重命名</span>
+              <span className="more" onClick={() => setNoting(noting === p.project_id ? null : p.project_id)}>标注</span>
               <span className="more" onClick={() => setHistoryOf(historyOf === p.project_id ? null : p.project_id)}>{historyOf === p.project_id ? "收起历史" : "版本历史"}</span>
-              <span className="more" onClick={() => { ctx.setProjectId(p.project_id); ctx.setPage("solution"); }}>打开 →</span></h3>
-            <p className="hint">阶段：{STAGE_LABEL[p.stage] || p.stage} · 更新于 {String(p.updated_at).slice(0, 10)}</p>
-            <div className="progress"><i style={{ width: `${((idx + 1) / STAGES.length) * 100}%` }} /></div>
-            <div className="hint" style={{ display: "flex", justifyContent: "space-between" }}>
-              <span>备赛</span><span>方案</span><span>开发</span><span>测试</span><span>提交</span>
-            </div>
+              <span className="more" onClick={() => { ctx.setProjectId(p.project_id); ctx.setPage("solution"); }}>打开 →</span>
+            </h3>
+            {p.note && noting !== p.project_id && <p className="hint" style={{ margin: "2px 0 6px" }}>📝 {p.note}</p>}
+            {noting === p.project_id && (
+              <div style={{ display: "flex", gap: 6, margin: "4px 0 8px" }}>
+                <input defaultValue={p.note || ""} placeholder="给这个项目加个标注，如「2023-A 运放测量 · 主力方案」"
+                  style={{ flex: 1, padding: 6, border: "1px solid var(--line)", borderRadius: 6 }}
+                  onKeyDown={(e) => { if (e.key === "Enter") saveNote(p.project_id, (e.target as HTMLInputElement).value); }}
+                  onBlur={(e) => saveNote(p.project_id, e.target.value)} />
+              </div>
+            )}
             <SnapshotBar projectId={p.project_id} />
+            <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
+              <button className="btn ghost sm" onClick={() => toggleArchive(p)}>{p.archived === 1 ? "取消归档" : "归档"}</button>
+              <button className="btn ghost sm danger" onClick={() => remove(p)}>删除</button>
+            </div>
             {historyOf === p.project_id && <ArtifactHistory projectId={p.project_id} onRestored={() => { if (ctx.projectId === p.project_id) ctx.setProjectId(p.project_id); }} />}
           </div>
         );
