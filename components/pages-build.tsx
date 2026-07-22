@@ -238,6 +238,15 @@ export function SolutionPage({ ctx }: { ctx: any }) {
               ✅ 已生成 {solList.length} 套方案 —— 核对下方框图与接口预检后，点「采用为主方案」继续
             </div>
           )}
+          {(ctx.solutions?.dropped_connections > 0 || ctx.solutions?.dropped_power_rails > 0) && (
+            <div className="issue warning" style={{ display: "block" }}>
+              模型输出中有结构异常项已被剔除：
+              {ctx.solutions.dropped_connections > 0 && `${ctx.solutions.dropped_connections} 条连线`}
+              {ctx.solutions.dropped_connections > 0 && ctx.solutions.dropped_power_rails > 0 && "、"}
+              {ctx.solutions.dropped_power_rails > 0 && `${ctx.solutions.dropped_power_rails} 条电源轨`}
+              —— 框图与规则检查基于剩余有效数据，建议核对完整性。
+            </div>
+          )}
           {ctx.solutions?.partial_output && (
             <div className="issue blocker" style={{ display: "block" }}>
               ⚠ <b>本次输出不完整</b>（曾被截断并自动修复）：{ctx.solutions.truncation_note || "方案可能缺少部分连线或功能块。"}

@@ -94,8 +94,12 @@ export function BomPage({ ctx }: { ctx: any }) {
           ⚠ <b>物料清单可能不完整</b>：本次输出曾被截断修复，末尾物料可能缺失。请对照方案功能块核对后再采购。
         </div>
       )}
-      {ctx.bom?.dropped_rows > 0 && (
-        <div className="issue warning" style={{ marginBottom: 12 }}>已剔除 {ctx.bom.dropped_rows} 行结构异常的数据</div>
+      {(ctx.bom?.dropped_rows > 0 || ctx.bom?.quantity_unknown_rows > 0) && (
+        <div className="issue warning" style={{ display: "block", marginBottom: 12 }}>
+          {ctx.bom.model_returned > 0 && <>模型返回 {ctx.bom.model_returned} 项，有效 {items.length} 项</>}
+          {ctx.bom.dropped_rows > 0 && <>，已剔除 {ctx.bom.dropped_rows} 项结构异常</>}
+          {ctx.bom.quantity_unknown_rows > 0 && <>；{ctx.bom.quantity_unknown_rows} 项数量无法解析（暂按 1 计并标记需确认）</>}
+        </div>
       )}
       <div className="statsbar" style={{ marginBottom: 14 }}>
         <span><b>{items.length}</b> 行物料</span>
@@ -126,7 +130,7 @@ export function BomPage({ ctx }: { ctx: any }) {
                 <tr key={it.line_id} style={it.needs_review ? { background: "#fffbeb" } : undefined}>
                   <td className="hint">{it.line_id}</td>
                   <td><b>{it.name}</b><br /><span className="hint">{it.mpn}{it.manufacturer ? ` · ${it.manufacturer}` : ""}{it.package ? ` · ${it.package}` : ""}</span></td>
-                  <td><b>{it.quantity}</b></td>
+                  <td><b>{it.quantity}</b>{it.quantity_unknown && <><br /><span className="chip gold" style={{ fontSize: 10 }}>数量待定</span></>}</td>
                   <td><input type="number" min={0} value={l.stock} style={{ width: 58, padding: 4, border: "1px solid var(--line)", borderRadius: 6 }}
                     onChange={(e) => setL(it.line_id, { stock: Number(e.target.value) })} /></td>
                   <td>{gap > 0 && l.status !== "已到货" ? <span className="chip red">缺 {gap}</span> : <span className="chip green">✓</span>}</td>

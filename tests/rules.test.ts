@@ -408,10 +408,10 @@ describe("配额与用量", () => {
 });
 
 describe("LLM 输出 Schema 校验", () => {
-  it("BOM 数量字段：'很多'→兜底 1，'2块'→2，负数→1", async () => {
+  it("BOM 数量字段：'很多'→null(交人工)，'2块'→2，数字原样", async () => {
     const { bomItemSchema } = await import("../lib/agent-schemas");
     const p = (q: any) => bomItemSchema.parse({ name: "x", quantity: q, confidence: 0.9 }).quantity;
-    expect(p("很多")).toBe(1);
+    expect(p("很多")).toBeNull();   // 不再悄悄猜成 1
     expect(p("2块")).toBe(2);
     expect(p(3)).toBe(3);
   });
@@ -615,5 +615,97 @@ describe("方案页布局结构（防回归）", () => {
     expect(inside).not.toBe("");                    // solution-wrap 必须正确闭合
     expect(inside).toContain("assistant-col");      // 助手在栅格内 → 才能并排显示
     expect(inside).toContain("RequirementEditor");  // 需求清单也在栅格内
+  });
+});
+
+describe("配额原子性与返还（P0-2 / P0-3）", () => {
+  it("SQL 用条件自增保证并发安全（契约检查）", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("lib/usage.ts", "utf8");
+    // 必须是「插入或条件更新并返回」的单条语句，而非先 SELECT 再 INSERT
+    expect(src).toContain("ON CONFLICT");
+    expect(src).toContain("WHERE quota_counters.used < ?");
+    expect(src).toContain("RETURNING used");
+    expect(src).not.toMatch(/SELECT COUNT[\s\S]{0,200}INSERT INTO llm_usage/);
+  });
+  it("失败路径调用 refundQuota，成功路径调用 commitQuota", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("app/api/extract-pdf/route.ts", "utf8");
+    expect(src).toContain("commitQuota(reservation.ref)");
+    expect(src).toContain("refundQuota(id.owner");
+  });
+});
+
+describe("公开诊断不得实时调用 LLM（P0-1）", () => {
+  it("非管理员分支读 health_cache，不出现 llmComplete", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("app/api/diag/route.ts", "utf8");
+    const publicBranch = src.slice(src.indexOf("if (!isAdmin)"), src.indexOf("const provider ="));
+    expect(publicBranch).toContain("health_cache");
+    expect(publicBranch).not.toContain("llmComplete");
+  });
+});
+
+describe("需求枚举归一", () => {
+  it("自由文本被映射到合法枚举，无法映射则落安全默认", async () => {
+    const { requirementSchema } = await import("../lib/agent-schemas");
+    const p = (o: any) => requirementSchema.parse({ id: "R1", description: "d", ...o });
+    expect(p({ priority: "very important" }).priority).toBe("mandatory");
+    expect(p({ priority: "optional" }).priority).toBe("bonus");
+    expect(p({ priority: "发挥部分" }).priority).toBe("bonus");
+    expect(p({ status: "probably confirmed" }).status).toBe("CONFIRMED");
+    expect(p({ status: "有歧义" }).status).toBe("AMBIGUOUS");
+    expect(p({ status: "" }).status).toBe("AI_EXTRACTED");
+    expect(p({ type: "性能指标" }).type).toBe("performance");
+    expect(p({ verification_method: "需要测量" }).verification_method).toBe("measurement");
+  });
+});
+
+describe("连线与电源轨真校验（第三节 1）", () => {
+  it("字符串连线被拒，结构化连线通过", async () => {
+    const { connectionSchema, parseArrayLoose } = await import("../lib/agent-schemas");
+    const r = parseArrayLoose(connectionSchema, [
+      "随便连一下",
+      { from: "B1.TX", to: "B2.RX", protocol: "UART", voltage_from: 3.3, voltage_to: 3.3 },
+      { from: "", to: "B3.IN" },
+    ]);
+    expect(r.data).toHaveLength(1);
+    expect(r.dropped).toBe(2);
+  });
+  it("电源轨预算强制数字，缺失记为 null 而非 0", async () => {
+    const { powerRailSchema } = await import("../lib/agent-schemas");
+    expect(powerRailSchema.parse({ rail: "5V", voltage: "5", budget_ma: "1000" }).budget_ma).toBe(1000);
+    expect(powerRailSchema.parse({ rail: "5V", voltage: 5, budget_ma: "" }).budget_ma).toBeNull();
+  });
+});
+
+describe("BOM 数量不猜（第三节 3）", () => {
+  it("'若干' 解析为 null 而不是 1", async () => {
+    const { bomItemSchema } = await import("../lib/agent-schemas");
+    expect(bomItemSchema.parse({ name: "电阻", quantity: "若干", confidence: 0.8 }).quantity).toBeNull();
+    expect(bomItemSchema.parse({ name: "电阻", quantity: "20个", confidence: 0.8 }).quantity).toBe(20);
+    expect(bomItemSchema.parse({ name: "电阻", quantity: 5, confidence: 0.8 }).quantity).toBe(5);
+  });
+});
+
+describe("统一身份函数（第五节）", () => {
+  it("只保留 getRequestIdentity，旧的 resolveTierAsync 已移除", async () => {
+    const fs = await import("node:fs");
+    expect(fs.readFileSync("lib/auth.ts", "utf8")).not.toContain("resolveTierAsync");
+    expect(fs.readFileSync("app/api/agent/route.ts", "utf8")).toContain("getRequestIdentity");
+    expect(fs.readFileSync("app/api/agent-tasks/route.ts", "utf8")).toContain("getRequestIdentity");
+  });
+});
+
+describe("兑换码防爆破（P0-4）", () => {
+  it("有失败次数限制与哈希存储，不明文比对", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("app/api/account/route.ts", "utf8");
+    expect(src).toContain("MAX_ATTEMPTS_PER_HOUR");
+    expect(src).toContain("redeem_attempts");
+    expect(src).toContain("hashCode");
+    expect(src).toContain("used_count < max_uses");   // 次数上限
+    expect(src).toContain("expires_at");              // 有效期
+    expect(src).toContain("revoked_at");              // 可撤销
   });
 });

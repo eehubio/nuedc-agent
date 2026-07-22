@@ -150,6 +150,58 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS note TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived INTEGER DEFAULT 0;
 `,
   },
+  {
+    id: 10,
+    name: "entitlements_quota_counters_access_codes",
+    sql: `
+CREATE TABLE IF NOT EXISTS user_entitlements (
+  id BIGSERIAL PRIMARY KEY,
+  owner TEXT NOT NULL,
+  tier TEXT NOT NULL,
+  source TEXT,
+  granted_at TIMESTAMPTZ DEFAULT now(),
+  expires_at TIMESTAMPTZ,
+  revoked_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_entitlements_owner ON user_entitlements(owner, revoked_at);
+
+CREATE TABLE IF NOT EXISTS quota_counters (
+  owner TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  day DATE NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (owner, kind, day)
+);
+
+CREATE TABLE IF NOT EXISTS access_codes (
+  code_hash TEXT PRIMARY KEY,
+  tier TEXT NOT NULL DEFAULT 'paid',
+  max_uses INTEGER DEFAULT 1,
+  used_count INTEGER DEFAULT 0,
+  expires_at TIMESTAMPTZ,
+  revoked_at TIMESTAMPTZ,
+  note TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS redeem_attempts (
+  id BIGSERIAL PRIMARY KEY,
+  owner TEXT NOT NULL,
+  ok INTEGER NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_attempts_owner ON redeem_attempts(owner, created_at);
+
+CREATE TABLE IF NOT EXISTS health_cache (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'success';
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS ref TEXT;
+`,
+  },
 ];
 
 let applied = false;

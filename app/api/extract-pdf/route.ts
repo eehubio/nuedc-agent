@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveTier, resolveOwner, withOwnerCookie } from "@/lib/auth";
-import { checkAndConsume } from "@/lib/usage";
+import { getRequestIdentity, withIdentityCookie } from "@/lib/identity";
+import { reserveQuota, commitQuota, refundQuota } from "@/lib/usage";
 
 /** PDF 魔数校验：base64 前几字节解码后必须以 %PDF- 开头 */
 function isPdfBase64(b64: string): boolean {
@@ -28,11 +28,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "文件不是有效的 PDF（缺少 %PDF- 文件头）" }, { status: 400 });
   }
 
-  // 鉴权 + 每日配额（免费 2 次 / 付费 20 次 / 实验室与管理员不限）
-  const tier = resolveTier(req);
-  const { owner, isNew } = resolveOwner(req);
-  const denied = await checkAndConsume(owner, "pdf_extract", tier);
-  if (denied) return withOwnerCookie(NextResponse.json({ error: denied }, { status: 429 }), owner, isNew);
+  // 鉴权 + 原子预占配额（免费 2 / 付费 20 / 实验室与管理员不限）
+  const id = await getRequestIdentity(req);
+  const { reservation, error: quotaErr } = await reserveQuota(id.owner, "pdf_extract", id.tier);
+  if (!reservation) return withIdentityCookie(NextResponse.json({ error: quotaErr }, { status: 429 }), id);
 
   const provider = process.env.LLM_PROVIDER || "anthropic";
   const prompt = `这是全国大学生电子设计竞赛的赛题 PDF。请完整提取文字内容，要求：
@@ -79,8 +78,14 @@ export async function POST(req: NextRequest) {
     } else {
       return NextResponse.json({ error: "当前 LLM 提供商不支持 PDF 解析，请直接粘贴题面文本" }, { status: 400 });
     }
-    return withOwnerCookie(NextResponse.json({ text: text.trim(), chars: text.trim().length }), owner, isNew);
+    await commitQuota(reservation.ref);   // 成功才正式扣减
+    return withIdentityCookie(NextResponse.json({
+      text: text.trim(), chars: text.trim().length,
+      quota: reservation.quota === -1 ? null : { used: reservation.used, limit: reservation.quota },
+    }), id);
   } catch (e: any) {
-    return NextResponse.json({ error: `PDF 解析失败：${e?.message || e}。可改用「粘贴文本」方式。` }, { status: 500 });
+    // 提取失败不该扣用户次数（诊断 P0-3）
+    await refundQuota(id.owner, "pdf_extract", reservation.ref);
+    return NextResponse.json({ error: `PDF 解析失败：${e?.message || e}。本次不计入配额，可重试或改用「粘贴文本」。` }, { status: 500 });
   }
 }

@@ -17,16 +17,43 @@ export async function GET(req: NextRequest) {
     if (sp.get("full") || sp.get("solution")) {
       return NextResponse.json({ error: "完整诊断需要管理员身份（先在 /admin 登录，或带 X-Api-Key）" }, { status: 403 });
     }
-    let llmOk = false;
+    // 公开诊断读缓存，绝不实时调用 LLM（诊断 P0-1：否则可被刷 token）
+    const { db, ensureSchema } = await import("@/lib/db");
+    let llm = "unknown", checkedAt: string | null = null;
     try {
-      await llmComplete({ system: "回复：ok", messages: [{ role: "user", content: "ping" }], maxTokens: 8 });
-      llmOk = true;
-    } catch { /* 保持 false */ }
+      await ensureSchema();
+      const rs = await db().execute({ sql: "SELECT value, updated_at FROM health_cache WHERE key='llm'", args: [] });
+      if (rs.rows.length) { llm = String(rs.rows[0].value); checkedAt = String(rs.rows[0].updated_at); }
+    } catch { /* 数据库不可用时保持 unknown */ }
     return NextResponse.json({
       service: "ok",
       database: process.env.DATABASE_URL ? "ok" : "missing",
-      llm: llmOk ? "ok" : "fail",
+      llm,                       // 由管理员诊断或定时任务刷新
+      llm_checked_at: checkedAt,
     });
+  }
+
+  // 管理员实时诊断限流：每分钟一次，避免误连点烧 token
+  {
+    const { db, ensureSchema } = await import("@/lib/db");
+    const sp = new URL(req.url).searchParams;
+    if (sp.get("full") || sp.get("solution")) {
+      try {
+        await ensureSchema();
+        const rs = await db().execute({
+          sql: "SELECT updated_at FROM health_cache WHERE key='admin_diag_last'", args: [],
+        });
+        const last = rs.rows.length ? new Date(String(rs.rows[0].updated_at)).getTime() : 0;
+        if (Date.now() - last < 60_000) {
+          return NextResponse.json({ error: `实时诊断限流：每分钟一次，请 ${Math.ceil((60_000 - (Date.now() - last)) / 1000)} 秒后重试` }, { status: 429 });
+        }
+        await db().execute({
+          sql: `INSERT INTO health_cache (key, value, updated_at) VALUES ('admin_diag_last','1', now())
+                ON CONFLICT (key) DO UPDATE SET updated_at = now()`,
+          args: [],
+        });
+      } catch { /* 限流表不可用时放行 */ }
+    }
   }
 
   const provider = process.env.LLM_PROVIDER || "anthropic";
@@ -52,8 +79,10 @@ export async function GET(req: NextRequest) {
   try {
     const text = await llmComplete({ system: "只回复两个字：正常", messages: [{ role: "user", content: "自检" }], maxTokens: 32 });
     out.connectivity = { ok: true, ms: Date.now() - t0, sample: text.slice(0, 40) };
+    await cacheHealth("ok");
   } catch (e: any) {
     out.connectivity = { ok: false, ms: Date.now() - t0, error: String(e?.message || e).slice(0, 500) };
+    await cacheHealth("fail");
     out.verdict = "LLM 调用失败 —— 见 connectivity.error（常见：Key 无效、模型名不存在、配额用尽、地区限制）";
     return NextResponse.json(out, { status: 200 });
   }
@@ -128,4 +157,18 @@ ${catalog}
     ? (out.json_generation.ok ? "全链路正常：Key、连通性、JSON 生成均通过" : "连通正常但 JSON 生成异常 —— 见 json_generation.error")
     : "Key 与连通性正常。加 ?full=1 可测试 JSON 生成能力。";
   return NextResponse.json(out);
+}
+
+
+/** 把 LLM 健康状态写入缓存，供公开诊断读取（公开端点不再实时调用模型） */
+async function cacheHealth(value: string) {
+  try {
+    const { db, ensureSchema } = await import("@/lib/db");
+    await ensureSchema();
+    await db().execute({
+      sql: `INSERT INTO health_cache (key, value, updated_at) VALUES ('llm', ?, now())
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      args: [value],
+    });
+  } catch { /* 忽略缓存写入失败 */ }
 }

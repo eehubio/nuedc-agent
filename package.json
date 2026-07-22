@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "lint": "next lint",
     "build:runner": "tsx scripts/build-runner.mts",
-    "e2e": "tsx scripts/e2e-smoke.mts"
+    "e2e": "tsx scripts/e2e-smoke.mts",
+    "verify:docx": "tsx scripts/verify-docx.mts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

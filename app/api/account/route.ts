@@ -1,59 +1,102 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveTier, resolveOwner, withOwnerCookie, safeEqualStr } from "@/lib/auth";
+import { createHash } from "node:crypto";
+import { getRequestIdentity, withIdentityCookie } from "@/lib/identity";
 import { db, ensureSchema } from "@/lib/db";
+import { DAILY_QUOTA, quotaFor } from "@/lib/usage";
 
 export const runtime = "nodejs";
 
-/** 账户与套餐。
- *  GET  → 当前身份、tier、可用能力、今日用量
- *  POST { access_code } → 用兑换码升级为 paid（码由 PAID_ACCESS_CODE 环境变量配置）
- *  正式收费接入 ezPLM 后由其下发 X-User-Tier，此处仅为独立部署时的过渡方案。 */
+const MAX_ATTEMPTS_PER_HOUR = 5;   // 兑换码爆破防护（诊断 P0-4）
+
+function hashCode(code: string): string {
+  return createHash("sha256").update(code.trim()).digest("hex");
+}
+
 export async function GET(req: NextRequest) {
   await ensureSchema();
-  const { owner, isNew } = resolveOwner(req);
-  const tier = await effectiveTier(req, owner);
+  const id = await getRequestIdentity(req);
   const usage = await db().execute({
-    sql: "SELECT kind, COUNT(*) AS n FROM llm_usage WHERE owner=? AND created_at >= date_trunc('day', now()) GROUP BY kind",
-    args: [owner],
+    sql: `SELECT kind, used FROM quota_counters WHERE owner=? AND day=CURRENT_DATE`,
+    args: [id.owner],
   }).catch(() => ({ rows: [] as any[] }));
-  return withOwnerCookie(NextResponse.json({
-    owner_masked: owner.slice(0, 12) + "…",
-    tier,
+
+  const ent = await db().execute({
+    sql: `SELECT tier, source, granted_at, expires_at FROM user_entitlements
+          WHERE owner=? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())
+          ORDER BY granted_at DESC LIMIT 1`,
+    args: [id.owner],
+  }).catch(() => ({ rows: [] as any[] }));
+
+  return withIdentityCookie(NextResponse.json({
+    owner_masked: id.owner.slice(0, 12) + "…",
+    tier: id.tier,
+    source: id.source,
+    entitlement: ent.rows[0] || null,
     capabilities: {
-      code_generation: tier !== "free",
-      report_generation: tier !== "free",
-      debug_assistant: tier !== "free",
-      asset_download: tier === "paid" || tier === "lab" || tier === "admin",
-      module_upload: tier !== "free",
+      code_generation: id.tier !== "free",
+      report_generation: id.tier !== "free",
+      debug_assistant: id.tier !== "free",
+      asset_download: ["paid", "lab", "admin"].includes(id.tier),
+      module_upload: id.tier !== "free",
     },
-    usage_today: Object.fromEntries(usage.rows.map((r: any) => [r.kind, Number(r.n)])),
-    upgrade_available: !!process.env.PAID_ACCESS_CODE && tier === "free",
-  }), owner, isNew);
+    quotas: Object.fromEntries(Object.keys(DAILY_QUOTA).map((k) => {
+      const limit = quotaFor(k, id.tier);
+      const used = Number(usage.rows.find((r: any) => r.kind === k)?.used || 0);
+      return [k, { used, limit: limit === -1 ? null : limit }];
+    })),
+    upgrade_available: id.tier === "free",
+  }), id);
 }
 
+/** 兑换码升级：优先查 access_codes 表（支持次数/有效期/撤销），
+ *  回退到 PAID_ACCESS_CODE 环境变量（单机部署便捷方案）。带每小时尝试次数限制。 */
 export async function POST(req: NextRequest) {
-  const expected = process.env.PAID_ACCESS_CODE;
-  if (!expected) return NextResponse.json({ error: "本部署未开启兑换码升级（未配置 PAID_ACCESS_CODE）" }, { status: 400 });
-  const { access_code } = await req.json().catch(() => ({}));
-  if (!safeEqualStr(String(access_code || ""), expected)) {
-    return NextResponse.json({ error: "兑换码不正确" }, { status: 401 });
-  }
   await ensureSchema();
-  const { owner, isNew } = resolveOwner(req);
-  await db().execute({
-    sql: `INSERT INTO llm_usage (owner, kind, detail) VALUES (?, 'tier_grant', 'paid')`,
-    args: [owner],
-  });
-  return withOwnerCookie(NextResponse.json({ ok: true, tier: "paid" }), owner, isNew);
-}
+  const id = await getRequestIdentity(req);
+  const { access_code } = await req.json().catch(() => ({}));
+  const code = String(access_code || "").trim();
+  if (!code) return NextResponse.json({ error: "请输入兑换码" }, { status: 400 });
 
-/** 有效 tier：管理员/ezPLM 头 > 兑换码授予 > free */
-async function effectiveTier(req: NextRequest, owner: string) {
-  const base = resolveTier(req);
-  if (base !== "free") return base;
-  const rs = await db().execute({
-    sql: "SELECT 1 AS x FROM llm_usage WHERE owner=? AND kind='tier_grant' LIMIT 1",
-    args: [owner],
+  // 防爆破：同一 owner 每小时最多 5 次失败尝试
+  const att = await db().execute({
+    sql: "SELECT COUNT(*) AS n FROM redeem_attempts WHERE owner=? AND ok=0 AND created_at > now() - interval '1 hour'",
+    args: [id.owner],
+  }).catch(() => ({ rows: [{ n: 0 }] as any[] }));
+  if (Number(att.rows[0]?.n || 0) >= MAX_ATTEMPTS_PER_HOUR) {
+    return NextResponse.json({ error: "尝试次数过多，请 1 小时后再试" }, { status: 429 });
+  }
+
+  const hash = hashCode(code);
+  let grantTier: string | null = null;
+  let source = "access_code";
+
+  // 1) 数据库兑换码（原子占用一次，防并发超发）
+  const claim = await db().execute({
+    sql: `UPDATE access_codes SET used_count = used_count + 1
+          WHERE code_hash = ? AND revoked_at IS NULL
+            AND (expires_at IS NULL OR expires_at > now())
+            AND (max_uses IS NULL OR used_count < max_uses)
+          RETURNING tier`,
+    args: [hash],
   }).catch(() => ({ rows: [] as any[] }));
-  return rs.rows.length ? "paid" : "free";
+  if (claim.rows.length) grantTier = String(claim.rows[0].tier);
+
+  // 2) 环境变量兜底
+  if (!grantTier && process.env.PAID_ACCESS_CODE) {
+    const envHash = hashCode(process.env.PAID_ACCESS_CODE);
+    if (envHash === hash) { grantTier = "paid"; source = "env_code"; }
+  }
+
+  await db().execute({
+    sql: "INSERT INTO redeem_attempts (owner, ok) VALUES (?, ?)",
+    args: [id.owner, grantTier ? 1 : 0],
+  }).catch(() => {});
+
+  if (!grantTier) return NextResponse.json({ error: "兑换码无效、已过期或已用完" }, { status: 401 });
+
+  await db().execute({
+    sql: "INSERT INTO user_entitlements (owner, tier, source) VALUES (?,?,?)",
+    args: [id.owner, grantTier, source],
+  });
+  return withIdentityCookie(NextResponse.json({ ok: true, tier: grantTier }), id);
 }

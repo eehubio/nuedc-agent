@@ -1,7 +1,7 @@
 // 工程类 Agent：方案架构、接口集成检查、BOM 整理、备料规划
 import { llmJson, lastRepairApplied } from "../llm";
 import { registerAgent, loadModuleIndex, moduleCatalogForLlm } from "./base";
-import { solutionSchema, bomOutputSchema, parseArrayLoose, bomItemSchema } from "../agent-schemas";
+import { solutionSchema, connectionSchema, powerRailSchema, parseArrayLoose, bomItemSchema } from "../agent-schemas";
 import { checkIntegration } from "../rules/integration-rules";
 import { applyQuantityRules, flagForReview } from "../rules/procurement-rules";
 import type { SolutionProposal, BomItem } from "../types";
@@ -84,8 +84,13 @@ ${reqOmitted.length ? `注意：以下需求未纳入本次上下文，请在 un
         role: b.role || b.type || "",
         covers_requirements: b.covers_requirements || b.requirements || [],
       })),
-      connections: s.connections || s.links || [],
-      power_tree: s.power_tree || s.power || [],
+      // 逐项校验：结构非法的连线/电源轨会被剔除并计数，不让脏数据流进规则引擎
+      connections: parseArrayLoose(connectionSchema, s.connections || s.links || []).data,
+      power_tree: parseArrayLoose(powerRailSchema, s.power_tree || s.power || []).data,
+      _dropped: {
+        connections: parseArrayLoose(connectionSchema, s.connections || s.links || []).dropped,
+        power_tree: parseArrayLoose(powerRailSchema, s.power_tree || s.power || []).dropped,
+      },
       advantages: s.advantages || s.pros || [],
       disadvantages: s.disadvantages || s.cons || [],
       risk_level: s.risk_level || "medium",
@@ -161,6 +166,8 @@ ${reqOmitted.length ? `注意：以下需求未纳入本次上下文，请在 un
     ...sol,
     integration_precheck: checkIntegration(sol, index),
   }));
+  const droppedConn = fresh.reduce((a: number, s: any) => a + (s._dropped?.connections || 0), 0);
+  const droppedRail = fresh.reduce((a: number, s: any) => a + (s._dropped?.power_tree || 0), 0);
   const solutions = [...existing, ...fresh];
 
   // 需求覆盖率核对（P0-5 配套）：未纳入上下文的需求也要如实计入未覆盖
@@ -175,7 +182,7 @@ ${reqOmitted.length ? `注意：以下需求未纳入本次上下文，请在 un
   return {
     ok: true,
     artifact_type: "solution_proposal",
-    output: { solutions, candidate_solutions: solutions, recommended_solution: solutions[0]?.solution_id, truncation_note, partial_output: partial, repair_applied: partial },
+    output: { solutions, candidate_solutions: solutions, recommended_solution: solutions[0]?.solution_id, truncation_note, partial_output: partial, repair_applied: partial, dropped_connections: droppedConn, dropped_power_rails: droppedRail },
     human_review_required: true, // 候选方案必须人工确认才能变成最终方案
     message: (existing.length ? `已追加备选方案 ${nextId}，可与现有方案对比` : "方案已生成，请核对后确认为主方案") + (partial ? "（⚠ 输出曾被截断修复，请重点核对完整性）" : ""),
   };
@@ -248,8 +255,12 @@ ${JSON.stringify((solution?.connections || []).slice(0, 20)).slice(0, 1500)}`;
         : "未能从输入解析出任何物料行，请检查粘贴内容格式。",
     };
   }
+  // 数量无法解析的行：标记需人工确认，不猜成 1（诊断第三节 3）
+  const needQty = bomParsed.data.filter((it: any) => it.quantity == null).length;
+  const withQty = bomParsed.data.map((it: any) =>
+    it.quantity == null ? { ...it, quantity: 1, quantity_unknown: true, needs_review: true } : it);
   // 规则层：备料数量规则 + 人工审核标记（不经过 LLM）
-  let items = applyQuantityRules(bomParsed.data as any);
+  let items = applyQuantityRules(withQty as any);
   items = flagForReview(items);
   items = items.map((it: any, i: number) => ({ ...it, line_id: it.line_id || `BOM-${String(i + 1).padStart(3, "0")}` }));
 
@@ -260,7 +271,9 @@ ${JSON.stringify((solution?.connections || []).slice(0, 20)).slice(0, 1500)}`;
     artifact_type: "bom",
     output: {
       items, unresolved_items: out.unresolved_items || [],
-      dropped_rows: bomParsed.dropped, partial_output: bomPartial, repair_applied: bomPartial,
+      dropped_rows: bomParsed.dropped, quantity_unknown_rows: needQty,
+      model_returned: (out as any)?.items?.length ?? 0,
+      partial_output: bomPartial, repair_applied: bomPartial,
     },
     human_review_required: needReview > 0,
     message: `整理出 ${items.length} 项${needReview ? `，${needReview} 项需人工确认（低置信度/替代料/功率风险）` : ""}`,
