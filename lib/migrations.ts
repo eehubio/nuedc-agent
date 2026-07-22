@@ -322,6 +322,115 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS problem_id TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS problem_version INTEGER;
 `,
   },
+  {
+    id: 13,
+    name: "worker_lease_and_quota_binding",
+    sql: `
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS worker_id TEXT;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS quota_ref TEXT;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS quota_kind TEXT;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS dead_reason TEXT;
+CREATE INDEX IF NOT EXISTS idx_tasks_claim ON agent_tasks(priority, scheduled_at) WHERE status='queued';
+CREATE INDEX IF NOT EXISTS idx_tasks_lease ON agent_tasks(lease_expires_at) WHERE status='running';
+`,
+  },
+  {
+    id: 14,
+    name: "problem_center_normalized",
+    sql: `
+CREATE TABLE IF NOT EXISTS problem_versions (
+  version_id TEXT PRIMARY KEY,
+  problem_id TEXT NOT NULL,
+  version_no INTEGER NOT NULL,
+  status TEXT DEFAULT 'draft',
+  content_hash TEXT,
+  source_pdf_sha256 TEXT,
+  raw_text TEXT,
+  published_by TEXT,
+  published_at TIMESTAMPTZ,
+  immutable INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (problem_id, version_no)
+);
+CREATE INDEX IF NOT EXISTS idx_pv_problem ON problem_versions(problem_id, version_no DESC);
+CREATE INDEX IF NOT EXISTS idx_pv_pdf ON problem_versions(source_pdf_sha256);
+
+CREATE TABLE IF NOT EXISTS problem_requirements (
+  req_id TEXT PRIMARY KEY,
+  version_id TEXT NOT NULL,
+  requirement_no TEXT NOT NULL,
+  type TEXT,
+  description TEXT NOT NULL,
+  target TEXT,
+  unit TEXT,
+  tolerance TEXT,
+  priority TEXT,
+  verification_method TEXT,
+  source_page INTEGER,
+  source_quote TEXT,
+  status TEXT DEFAULT 'AI_EXTRACTED',
+  confirmed_by TEXT,
+  confirmed_at TIMESTAMPTZ,
+  sort_order INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_preq_version ON problem_requirements(version_id, sort_order);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_preq_no ON problem_requirements(version_id, requirement_no);
+
+CREATE TABLE IF NOT EXISTS problem_scoring_items (
+  item_id TEXT PRIMARY KEY,
+  version_id TEXT NOT NULL,
+  item TEXT NOT NULL,
+  points NUMERIC(8,2),
+  points_type TEXT DEFAULT 'estimated',
+  requirement_refs TEXT,
+  source_page INTEGER,
+  source_quote TEXT,
+  sort_order INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_psi_version ON problem_scoring_items(version_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS problem_notes (
+  note_id TEXT PRIMARY KEY,
+  version_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content TEXT NOT NULL,
+  resolved INTEGER DEFAULT 0,
+  resolution TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pnote_version ON problem_notes(version_id, kind);
+
+CREATE TABLE IF NOT EXISTS problem_reviews (
+  review_id TEXT PRIMARY KEY,
+  version_id TEXT NOT NULL,
+  reviewer TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  note TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_preview_version ON problem_reviews(version_id);
+
+ALTER TABLE problem_review_diffs ADD COLUMN IF NOT EXISTS version_id TEXT;
+ALTER TABLE problem_review_diffs ADD COLUMN IF NOT EXISTS requirement_no TEXT;
+ALTER TABLE problem_review_diffs ADD COLUMN IF NOT EXISTS match_method TEXT;
+ALTER TABLE problem_review_diffs ADD COLUMN IF NOT EXISTS match_confidence NUMERIC(4,3);
+
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS problem_version_id TEXT;
+`,
+  },
+  {
+    id: 15,
+    name: "module_scope_and_inventory",
+    sql: `
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS scope TEXT DEFAULT 'PUBLIC';
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS owner_ref TEXT;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS org_ref TEXT;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS inventory_qty INTEGER DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_modules_scope ON modules(scope, certification_status);
+`,
+  },
 ];
 
 let applied = false;

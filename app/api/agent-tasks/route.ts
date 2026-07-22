@@ -84,15 +84,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: gate.reason, system_mode: mode, degraded: true }, { status: 503 });
   }
 
+  // 配额预占与任务绑定：任务终态时统一 commit/refund，Worker 崩溃也不会重复扣费
   const taskId = uid("TASK");
+  let quotaRef: string | null = null;
+  const quotaKind = policy.costClass === "high" ? "heavy_task" : null;
+  if (quotaKind) {
+    const { reserveQuota } = await import("@/lib/usage");
+    const { reservation, error: qerr } = await reserveQuota(id.owner, quotaKind, tier);
+    if (!reservation) return NextResponse.json({ error: qerr }, { status: 429 });
+    quotaRef = reservation.ref;
+  }
   // 模型名不在建单时臆测（选路由网关在执行时决定，可能容灾切换）——执行完成后回写实际值
   const model: string | null = null;
   await db().execute({
     sql: `INSERT INTO agent_tasks (task_id, project_id, agent_type, status, input, tier, idempotency_key, model,
-            task_type, priority, input_hash, owner_ref, queue_name, scheduled_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, now())`,
+            task_type, priority, input_hash, owner_ref, queue_name, quota_ref, quota_kind, scheduled_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, now())`,
     args: [taskId, projectId, agent, "queued", JSON.stringify(body.input || {}), tier, body.idempotency_key || null, model,
-      taskType, policy.priority, hash, id.owner, policy.concurrencyClass],
+      taskType, policy.priority, hash, id.owner, policy.concurrencyClass, quotaRef, quotaKind],
   });
   return NextResponse.json({ task_id: taskId, status: "queued", model }, { status: 202 });
 }

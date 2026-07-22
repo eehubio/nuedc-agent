@@ -21,7 +21,8 @@ export interface UsageEvent {
 
 export function estimateCost(provider: string, inputTokens: number, outputTokens: number): number {
   const p = getProvider(provider);
-  if (!p) return 0;
+  // 定价未知的 Provider（如自建网关）无法估算成本，记 0 并在后台以"定价未知"呈现
+  if (!p || !p.pricing) return 0;
   return (inputTokens / 1e6) * p.pricing.inputPerMillion + (outputTokens / 1e6) * p.pricing.outputPerMillion;
 }
 

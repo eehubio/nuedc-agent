@@ -13,8 +13,15 @@ export type Priority = 0 | 1 | 2 | 3;
 export type CostClass = "low" | "medium" | "high";
 export type Concurrency = "light" | "heavy";
 
+/** Schema 校验强度：
+ *  strict = 校验失败即判定调用失败（不缓存、不落正式产物）
+ *  warn   = 记录 issues 但允许通过（供人工确认类任务）
+ *  none   = 不校验（自由文本输出） */
+export type SchemaMode = "strict" | "warn" | "none";
+
 export interface TaskPolicy {
   taskType: TaskType;
+  schemaMode: SchemaMode;
   /** 能力偏好：quality=优先强模型，cheap=优先低价模型，vision=需多模态 */
   preference: "quality" | "cheap" | "vision";
   useRulesFirst: boolean;
@@ -37,6 +44,7 @@ const P = (
   priority: Priority, over: Partial<TaskPolicy> = {},
 ): TaskPolicy => ({
   taskType, preference, maxOutputTokens, priority,
+  schemaMode: "warn",
   useRulesFirst: false, allowCache: true, cacheScope: "project",
   maxInputTokens: 8000, temperature: 0.3, thinkingBudget: 0,
   timeoutMs: 90_000, maxRetries: 2,
@@ -49,26 +57,26 @@ const P = (
 export const TASK_POLICIES: Record<TaskType, TaskPolicy> = {
   // ---- 赛题中心（官方题目只解析一次，结果全局缓存）----
   PDF_EXTRACT:           P("PDF_EXTRACT", "vision", 8000, 1, { cacheScope: "global", timeoutMs: 120_000, maxInputTokens: 20_000 }),
-  PROBLEM_STRUCTURE:     P("PROBLEM_STRUCTURE", "quality", 4000, 1, { cacheScope: "global", requiresHumanReview: true }),
-  SCORING_EXTRACT:       P("SCORING_EXTRACT", "quality", 2000, 1, { cacheScope: "global", requiresHumanReview: true }),
+  PROBLEM_STRUCTURE:     P("PROBLEM_STRUCTURE", "quality", 4000, 1, { schemaMode: "strict", cacheScope: "global", requiresHumanReview: true }),
+  SCORING_EXTRACT:       P("SCORING_EXTRACT", "quality", 2000, 1, { schemaMode: "strict", cacheScope: "global", requiresHumanReview: true }),
 
   // ---- 需求与方案 ----
-  REQUIREMENT_NORMALIZE: P("REQUIREMENT_NORMALIZE", "cheap", 2000, 0),
-  SOLUTION_PRIMARY:      P("SOLUTION_PRIMARY", "quality", 4000, 0, { thinkingBudget: 1024, temperature: 0.4, timeoutMs: 120_000, requiresHumanReview: true }),
-  SOLUTION_FALLBACK:     P("SOLUTION_FALLBACK", "cheap", 3000, 2, { temperature: 0.6, requiresHumanReview: true }),
+  REQUIREMENT_NORMALIZE: P("REQUIREMENT_NORMALIZE", "cheap", 2000, 0, { schemaMode: "strict" }),
+  SOLUTION_PRIMARY:      P("SOLUTION_PRIMARY", "quality", 4000, 0, { schemaMode: "strict", thinkingBudget: 1024, temperature: 0.4, timeoutMs: 120_000, requiresHumanReview: true }),
+  SOLUTION_FALLBACK:     P("SOLUTION_FALLBACK", "cheap", 3000, 2, { schemaMode: "strict", temperature: 0.6, requiresHumanReview: true }),
   MODULE_GAP_ANALYSIS:   P("MODULE_GAP_ANALYSIS", "cheap", 1500, 1),
 
   // ---- 物料 ----
-  BOM_NORMALIZE:         P("BOM_NORMALIZE", "cheap", 2000, 1),
+  BOM_NORMALIZE:         P("BOM_NORMALIZE", "cheap", 2000, 1, { schemaMode: "strict" }),
   PROCUREMENT_PLAN:      P("PROCUREMENT_PLAN", "cheap", 1500, 2),
 
   // ---- 代码 ----
-  CODE_GENERATE:         P("CODE_GENERATE", "quality", 3000, 1, { timeoutMs: 120_000 }),
+  CODE_GENERATE:         P("CODE_GENERATE", "quality", 3000, 1, { schemaMode: "strict", timeoutMs: 120_000 }),
   CODE_REPAIR:           P("CODE_REPAIR", "quality", 3000, 0, { thinkingBudget: 1024, allowCache: false }),
   BUILD_LOG_EXPLAIN:     P("BUILD_LOG_EXPLAIN", "cheap", 1200, 2),
 
   // ---- 测试与调试 ----
-  TEST_PLAN:             P("TEST_PLAN", "cheap", 2500, 1),
+  TEST_PLAN:             P("TEST_PLAN", "cheap", 2500, 1, { schemaMode: "strict" }),
   TEST_ANALYSIS:         P("TEST_ANALYSIS", "cheap", 1500, 0),
   DEBUG_ASSIST:          P("DEBUG_ASSIST", "quality", 1500, 0, { thinkingBudget: 512, allowCache: false }),
 

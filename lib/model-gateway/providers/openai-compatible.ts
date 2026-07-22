@@ -26,7 +26,7 @@ export function createOpenAICompatibleProvider(cfg: {
       vision: true, pdf: false, jsonMode: true, thinkingControl: false,
       ...(cfg.capabilities || {}),
     },
-    pricing: cfg.pricing || { inputPerMillion: 0, outputPerMillion: 0 },
+    pricing: cfg.pricing ?? null,   // 未声明定价 = 未知，不参与低价排序
 
     isConfigured: () => !!env("API_KEY"),
 

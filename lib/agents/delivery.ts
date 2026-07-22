@@ -1,7 +1,7 @@
 // 交付类 Agent：代码生成、LabSight 调试、报告生成 + 总控编排
-import { llmComplete, llmJson, lastRepairApplied } from "../llm";
+import { llmComplete, llmJson } from "../llm";
 import { codeFileSchema, parseArrayLoose } from "../agent-schemas";
-import { registerAgent, loadModuleIndex } from "./base";
+import { registerAgent, loadModuleIndex, sawPartial } from "./base";
 import type { SolutionProposal } from "../types";
 
 // ============ Agent 11：代码生成（Code Generation）============
@@ -71,7 +71,7 @@ ${JSON.stringify(relatedModules.map((m: any) => ({ id: m.id, name: m.name, inter
   if (!files.length) {
     return { ok: false, output: null, message: "模型未生成任何代码文件（可能把全部 SDK 调用误判为不可生成）。请重试；反复出现请反馈。" };
   }
-  const codePartial = lastRepairApplied();
+  const codePartial = sawPartial();
   return {
     ok: true,
     artifact_type: "code_bundle",

@@ -16,14 +16,34 @@ function qualityChain(): string[] {
   return [primary, ...fallbacks];
 }
 
-/** 低成本优先链：便宜的在前（按已配置 Provider 的实际单价排序） */
-function cheapChain(): string[] {
+/** 单次任务的预计成本（美元）：按该任务实际的输入/输出 token 配比估算，
+ *  而不是简单相加单价 —— 输出昂贵的模型在长输出任务上才真的贵。 */
+export function estimateTaskCost(
+  pricing: { inputPerMillion: number; outputPerMillion: number },
+  expectedInputTokens: number,
+  expectedOutputTokens: number,
+): number {
+  return (expectedInputTokens / 1e6) * pricing.inputPerMillion
+       + (expectedOutputTokens / 1e6) * pricing.outputPerMillion;
+}
+
+/** 低成本优先链：按「该任务的预计花费」排序，定价未知者不参与自动排序 */
+function cheapChain(policy?: TaskPolicy): string[] {
   const explicit = envList("MODEL_PROVIDER_CHEAP");
   if (explicit.length) return [...explicit, ...qualityChain()];
-  const configured = Object.values(PROVIDERS).filter((p) => p.isConfigured() && p.id !== "mock");
-  const byPrice = [...configured].sort((a, b) =>
-    (a.pricing.inputPerMillion + a.pricing.outputPerMillion) - (b.pricing.inputPerMillion + b.pricing.outputPerMillion));
-  const ids = byPrice.map((p) => p.id);
+
+  const priced = Object.values(PROVIDERS)
+    .filter((p) => p.isConfigured() && p.id !== "mock" && p.pricing !== null);
+  const expIn = policy?.maxInputTokens ?? 4000;
+  const expOut = policy?.maxOutputTokens ?? 2000;
+  const byCost = [...priced].sort((a, b) =>
+    estimateTaskCost(a.pricing!, expIn, expOut) - estimateTaskCost(b.pricing!, expIn, expOut));
+
+  // 定价未知的排在有定价的之后（可用但不优先）
+  const unpriced = Object.values(PROVIDERS)
+    .filter((p) => p.isConfigured() && p.id !== "mock" && p.pricing === null)
+    .map((p) => p.id);
+  const ids = [...byCost.map((p) => p.id), ...unpriced];
   return ids.length ? ids : qualityChain();
 }
 
@@ -36,20 +56,26 @@ function visionChain(): string[] {
   });
 }
 
-export interface RouteCandidate { provider: Provider; model: string }
+export interface RouteCandidate {
+  provider: Provider;
+  model: string;
+  /** 选中理由，供运营后台解释"为什么用这个模型" */
+  reason: string;
+}
 
 /** 返回按优先级排序的候选 Provider（已过滤未配置与熔断中的）。 */
 export async function route(policy: TaskPolicy, opts: { hint?: string | null; needPdf?: boolean } = {}): Promise<RouteCandidate[]> {
   // mock 优先级最高（压测/本地开发）
   if (process.env.ENABLE_MOCK_PROVIDER === "1") {
     const mock = getProvider("mock")!;
-    return [{ provider: mock, model: mock.modelFor("text") }];
+    return [{ provider: mock, model: mock.modelFor("text"), reason: "ENABLE_MOCK_PROVIDER=1（压测/开发模式）" }];
   }
 
   let chain: string[];
-  if (policy.preference === "vision") chain = visionChain();
-  else if (policy.preference === "cheap") chain = cheapChain();
-  else chain = qualityChain();
+  let reason: string;
+  if (policy.preference === "vision") { chain = visionChain(); reason = "任务需要多模态能力"; }
+  else if (policy.preference === "cheap") { chain = cheapChain(policy); reason = `低成本优先（按 ${policy.maxInputTokens}/${policy.maxOutputTokens} token 配比估算）`; }
+  else { chain = qualityChain(); reason = "质量优先（主模型在前）"; }
 
   if (opts.hint) chain = [opts.hint, ...chain];
   // 质量任务在链尾补上其他已配置 Provider 作为最后手段
@@ -67,7 +93,10 @@ export async function route(policy: TaskPolicy, opts: { hint?: string | null; ne
     const kind = policy.preference === "vision" ? (opts.needPdf ? "ocr" : "vision") : "text";
     const model = p.modelFor(kind as any);
     if (!model) continue;
-    out.push({ provider: p, model });
+    const why = opts.hint === id ? "调用方显式指定"
+      : out.length === 0 ? reason
+      : `容灾候补 #${out.length}（${reason}）`;
+    out.push({ provider: p, model, reason: why });
   }
   return out;
 }

@@ -108,21 +108,18 @@ export function repairTruncatedJson(text: string): string | null {
   return null;
 }
 
-/** 本次调用是否发生过截断修复 —— 由 llmJson 设置，供 Agent 读取后标记产物为 partial。
- *  用模块级变量而非返回值，避免改动所有 Agent 的调用签名。 */
-let _lastRepairApplied = false;
-export function lastRepairApplied(): boolean { return _lastRepairApplied; }
 
+/** 兼容层：旧 Agent 调用点继续可用，内部**单次转发**到网关。
+ *  JSON 解析、截断修复、重试全部由网关统一负责，此处不得重复实现
+ *  （否则重试次数翻倍、修复逻辑分叉，且模块级状态会并发串线）。 */
 export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
-  _lastRepairApplied = false;
-  const system = opts.system +
-    "\n\n输出要求：只输出一个合法 JSON 对象，不要输出 Markdown 代码围栏、前言或解释文字。" +
-    "\n务必控制篇幅：描述性字段简明扼要（每条不超过 60 字），确保 JSON 在 token 限额内完整闭合。";
-  // 自动附加当前 Agent 上下文与 taskType（可追踪 + 策略路由）
+  const { modelGateway } = await import("./model-gateway");
+  const { AGENT_TASK_TYPE } = await import("./model-gateway/task-policy");
+
+  // 自动附加当前 Agent 上下文（ALS，天然并发安全）
   let auto: Partial<LlmOptions> = {};
   try {
     const { currentAgentContext } = await import("./agents/base");
-    const { AGENT_TASK_TYPE } = await import("./model-gateway/task-policy");
     const c = currentAgentContext();
     auto = {
       owner: opts.owner ?? c.owner,
@@ -130,43 +127,37 @@ export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
       taskId: opts.taskId ?? c.taskId,
       taskType: opts.taskType ?? (c.agent ? AGENT_TASK_TYPE[c.agent] : undefined),
     };
-  } catch { /* 非 Agent 环境调用（如自检）时忽略 */ }
-  const raw = await llmComplete({ ...opts, ...auto, system, json: true });
-  const cleaned = raw.replace(/```json|```/g, "").trim();
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  const body = start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned;
-  try {
-    return JSON.parse(body) as T;
-  } catch {
-    // 1) 尝试修复截断
-    const repaired = repairTruncatedJson(cleaned);
-    if (repaired) {
-      try {
-        const parsed = JSON.parse(repaired) as T;
-        _lastRepairApplied = true;
-        console.warn("[llmJson] 输出被截断，已修复并保留完整部分（结果将标记为 partial）");
-        return parsed;
-      } catch { /* 落到重试 */ }
-    }
-    // 2) 重试一次：更紧凑的输出要求 + 更大额度
-    try {
-      const retry = await llmComplete({
-        ...opts,
-        json: true,
-        system: system + "\n上一次输出因过长被截断。请大幅精简：只保留必要字段，描述控制在 30 字以内。",
-        maxTokens: Math.min((opts.maxTokens ?? 4096) * 2, 16384),
-        temperature: 0,
-      });
-      const rc = retry.replace(/```json|```/g, "").trim();
-      const rs = rc.indexOf("{"), re = rc.lastIndexOf("}");
-      return JSON.parse(rs >= 0 && re > rs ? rc.slice(rs, re + 1) : rc) as T;
-    } catch { /* 落到抛错 */ }
-    throw new Error("LLM 输出无法解析为 JSON（已尝试截断修复与重试）。建议缩短赛题文本后重试。原始片段：" + cleaned.slice(0, 200));
+  } catch { /* 非 Agent 环境（如自检）忽略 */ }
+
+  const r = await modelGateway.run<T>({
+    taskType: (auto.taskType || opts.taskType || "GENERAL_QA") as any,
+    system: opts.system +
+      "\n\n输出要求：只输出一个合法 JSON 对象，不要输出 Markdown 代码围栏、前言或解释文字。" +
+      "\n务必控制篇幅：描述性字段简明扼要，确保 JSON 在 token 限额内完整闭合。",
+    messages: opts.messages as any,
+    json: true,
+    maxOutputTokens: opts.maxTokens,
+    owner: auto.owner ?? null,
+    projectId: auto.projectId ?? null,
+    taskId: auto.taskId ?? null,
+    allowCache: opts.allowCache,
+  });
+
+  if (!r.ok) throw new GatewayCallError(r.message || "模型调用失败", r.errorCode, r.validation?.issues);
+  if (r.partial) {
+    try { const { markPartial } = await import("./agents/base"); markPartial(); } catch { /* 非 Agent 环境 */ }
+  }
+  return r.output as T;
+}
+
+/** 网关调用失败的结构化错误，供 Agent 区分 Schema 失败与 Provider 失败 */
+export class GatewayCallError extends Error {
+  constructor(message: string, readonly errorCode?: string, readonly issues?: string[]) {
+    super(message);
+    this.name = "GatewayCallError";
   }
 }
 
-// ---------- Anthropic ----------
 async function anthropicComplete(opts: LlmOptions): Promise<string> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("缺少 ANTHROPIC_API_KEY");

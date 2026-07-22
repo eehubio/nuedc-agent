@@ -16,7 +16,8 @@
     "build:runner": "tsx scripts/build-runner.mts",
     "e2e": "tsx scripts/e2e-smoke.mts",
     "verify:docx": "tsx scripts/verify-docx.mts",
-    "load-test": "tsx scripts/load-test.mts"
+    "load-test": "tsx scripts/load-test.mts",
+    "worker": "tsx scripts/agent-worker.mts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

@@ -44,8 +44,10 @@ export interface Provider {
   readonly id: string;
   readonly label: string;
   readonly capabilities: ProviderCapabilities;
-  /** 每百万 token 价格（美元），用于成本估算；未知填 0 */
-  readonly pricing: { inputPerMillion: number; outputPerMillion: number };
+  /** 每百万 token 价格（美元）。null = 定价未知：
+   *  该 Provider 不参与低成本自动排序（避免"未知=最便宜"被优先选中），
+   *  但仍可作为显式指定或容灾链末端使用。 */
+  readonly pricing: { inputPerMillion: number; outputPerMillion: number } | null;
   isConfigured(): boolean;
   modelFor(kind: "text" | "vision" | "ocr"): string;
   complete(req: ProviderRequest, model: string): Promise<ProviderResponse>;

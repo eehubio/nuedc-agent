@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveTier } from "@/lib/auth";
-import { getProblem, saveExtraction, diffExtractions, saveDiffs } from "@/lib/problem-center";
+import { getDraftVersion, createDraftVersion, getVersionContent, saveExtraction, diffExtractions, saveDiffs, pdfSha256 } from "@/lib/problem-center";
 import { modelGateway } from "@/lib/model-gateway";
 import { problemInterpretationSchema } from "@/lib/agent-schemas";
 import { z } from "zod";
@@ -24,11 +24,18 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const tier = resolveTier(req);
   if (tier !== "admin" && tier !== "lab") return NextResponse.json({ error: "仅工作人员可执行提取" }, { status: 403 });
 
-  const p = await getProblem(params.id);
-  if (!p) return NextResponse.json({ error: "题目不存在" }, { status: 404 });
-
   const body = await req.json().catch(() => ({}));
-  const text: string = body.raw_text || p.raw_text || "";
+  // 只往草稿版本写；没有草稿就开一个新版本（已发布版本不可改）
+  let draft: any = await getDraftVersion(params.id);
+  if (!draft) {
+    const vid = await createDraftVersion(params.id, {
+      rawText: body.raw_text,
+      pdfSha: body.data_base64 ? pdfSha256(body.data_base64) : undefined,
+    });
+    draft = { version_id: vid, version_no: 1, raw_text: body.raw_text };
+  }
+  const versionId = String(draft.version_id);
+  const text: string = body.raw_text || draft.raw_text || "";
   const pdfBase64: string | undefined = body.data_base64;
   if (!text && !pdfBase64) return NextResponse.json({ error: "缺少题面文本或 PDF" }, { status: 400 });
 
@@ -43,7 +50,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     pdfBase64,
     schema,
     owner: `staff:${tier}`,
-    problemVersion: `${params.id}:v${p.problem_version}`,
+    problemVersion: `${params.id}:${versionId}`,
     allowCache: true,
   });
   if (!runA.ok || !runA.output) {
@@ -51,15 +58,16 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
   const a: any = runA.output;
 
-  await saveExtraction(params.id, {
+  await saveExtraction(versionId, {
     requirements: a.requirements || [],
     scoringItems: a.scoring_items || [],
+    ambiguities: a.ambiguities || [],
     rawText: text || undefined,
   });
 
   if (!dual) {
     return NextResponse.json({
-      ok: true, provider_a: runA.provider, dual_review: false,
+      ok: true, version_id: versionId, provider_a: runA.provider, dual_review: false,
       requirements: a.requirements?.length || 0, scoring_items: a.scoring_items?.length || 0,
     });
   }
@@ -88,10 +96,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     { requirements: a.requirements || [], scoring_items: a.scoring_items || [] },
     { requirements: b.requirements || [], scoring_items: b.scoring_items || [] },
   );
-  await saveDiffs(params.id, diffs, runA.provider, runB.provider);
+  await saveDiffs(versionId, params.id, diffs, runA.provider, runB.provider);
 
   return NextResponse.json({
-    ok: true, dual_review: true,
+    ok: true, version_id: versionId, dual_review: true,
     provider_a: runA.provider, provider_b: runB.provider,
     requirements: a.requirements?.length || 0,
     scoring_items: a.scoring_items?.length || 0,

@@ -229,15 +229,15 @@ describe("上下文压缩（降本核心）", () => {
 });
 
 describe("赛题中心：官方题目只解析一次", () => {
-  it("同一 PDF 哈希唯一，重复上传返回既有题目", async () => {
-    const { pdfHash } = await import("../lib/problem-center");
-    const a = pdfHash("JVBERi0xLjQKJeLjz9M...");
-    expect(pdfHash("JVBERi0xLjQKJeLjz9M...")).toBe(a);
-    expect(pdfHash("different")).not.toBe(a);
-    const fs = await import("node:fs");
-    const mig = fs.readFileSync("lib/migrations.ts", "utf8");
-    expect(mig).toContain("idx_problems_pdf");           // 唯一索引防重复解析
-    expect(mig).toContain("source_pdf_hash");
+  it("PDF 哈希对完整二进制计算，长文件前缀相同也能区分", async () => {
+    const { pdfSha256 } = await import("../lib/problem-center");
+    // 两份「前 600KB 完全相同、仅尾部不同」的文件 —— 截断哈希会误判为同一份
+    const prefix = "A".repeat(600_000);
+    const p1 = Buffer.from(prefix + "TAIL-ONE").toString("base64");
+    const p2 = Buffer.from(prefix + "TAIL-TWO").toString("base64");
+    expect(pdfSha256(p1)).not.toBe(pdfSha256(p2));
+    expect(pdfSha256(p1)).toBe(pdfSha256(p1));
+    expect(pdfSha256(p1)).toHaveLength(64);
   });
 
   it("项目采用官方题目的接口不调用任何模型", async () => {
@@ -259,7 +259,7 @@ describe("赛题中心：官方题目只解析一次", () => {
     };
     const diffs = diffExtractions(a as any, b as any);
     const critical = diffs.filter((d) => d.severity === "critical");
-    expect(critical.length).toBe(2);                       // 指标不一致 + 分值不一致
+    expect(critical.length).toBe(2);
     expect(critical.some((d) => d.field_path.includes("target"))).toBe(true);
     expect(critical.some((d) => d.field_path.includes("points"))).toBe(true);
   });

@@ -1,192 +1,455 @@
 import { createHash } from "node:crypto";
 import { db, ensureSchema, uid } from "./db";
 
-/** 赛题中心：官方题目只解析一次，用户项目引用发布版本，不再重复调用模型。 */
+/** 赛题中心（规范化模型）。
+ *  official_problems 只存题目主体；每次发布产生不可变的 problem_versions，
+ *  需求/评分项/说明/审核记录各自成表，可按条查询、确认与追溯。 */
 
 export const PROBLEM_STATUSES = ["draft", "extracted", "reviewing", "published", "archived"] as const;
 export type ProblemStatus = (typeof PROBLEM_STATUSES)[number];
 
-export interface OfficialProblem {
-  problem_id: string;
-  year: number;
-  code: string;
-  title: string;
-  group_name?: string | null;
-  status: ProblemStatus;
-  problem_version: number;
-  requirements: any[];
-  scoring_items: any[];
-  notes?: string | null;
-  report_requirements?: string | null;
+/** 对完整 PDF 二进制计算 SHA-256。
+ *  绝不能只取前缀：赛题 PDF 往往共用模板，前若干字节高度相似，
+ *  截断哈希会把不同题目误判为同一份。 */
+export function pdfSha256(base64: string): string {
+  return createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
 }
 
-export function pdfHash(base64: string): string {
-  return createHash("sha256").update(base64.slice(0, 500_000)).digest("hex").slice(0, 40);
-}
-
-export async function findByPdfHash(hash: string) {
-  await ensureSchema();
-  const rs = await db().execute({
-    sql: "SELECT problem_id, status, problem_version, title FROM official_problems WHERE source_pdf_hash=?",
-    args: [hash],
-  });
-  return rs.rows[0] || null;
-}
+/* ============ 题目与版本 ============ */
 
 export async function createProblem(input: {
-  year: number; code: string; title: string; groupName?: string;
-  rawText?: string; pdfHash?: string; createdBy: string;
+  year: number; code: string; title: string; groupName?: string; createdBy: string;
 }): Promise<string> {
   await ensureSchema();
   const id = uid("PROB");
   await db().execute({
-    sql: `INSERT INTO official_problems (problem_id, year, code, title, group_name, status, raw_text, source_pdf_hash, created_by)
-          VALUES (?,?,?,?,?,?,?,?,?)`,
-    args: [id, input.year, input.code, input.title, input.groupName || null,
-      input.rawText ? "extracted" : "draft", input.rawText || null, input.pdfHash || null, input.createdBy],
+    sql: `INSERT INTO official_problems (problem_id, year, code, title, group_name, status, created_by)
+          VALUES (?,?,?,?,?, 'draft', ?)`,
+    args: [id, input.year, String(input.code).toUpperCase(), input.title, input.groupName || null, input.createdBy],
   });
   return id;
 }
 
-export async function getProblem(problemId: string) {
+/** 创建可编辑的草稿版本（已发布版本不可改，修订必须开新版本） */
+export async function createDraftVersion(problemId: string, opts: { rawText?: string; pdfSha?: string } = {}): Promise<string> {
   await ensureSchema();
-  const rs = await db().execute({ sql: "SELECT * FROM official_problems WHERE problem_id=?", args: [problemId] });
-  if (!rs.rows.length) return null;
-  const r: any = rs.rows[0];
-  const parse = (v: any, d: any) => { try { return v ? JSON.parse(String(v)) : d; } catch { return d; } };
+  const rs = await db().execute({
+    sql: "SELECT COALESCE(MAX(version_no), 0) v FROM problem_versions WHERE problem_id=?",
+    args: [problemId],
+  });
+  const next = Number(rs.rows[0]?.v || 0) + 1;
+  const vid = uid("PVER");
+  await db().execute({
+    sql: `INSERT INTO problem_versions (version_id, problem_id, version_no, status, raw_text, source_pdf_sha256, immutable)
+          VALUES (?,?,?, 'draft', ?, ?, 0)`,
+    args: [vid, problemId, next, opts.rawText || null, opts.pdfSha || null],
+  });
+  return vid;
+}
+
+/** 按 PDF 哈希查已有版本（同一份 PDF 不重复解析） */
+export async function findVersionByPdf(sha: string) {
+  await ensureSchema();
+  const rs = await db().execute({
+    sql: `SELECT v.version_id, v.problem_id, v.version_no, v.status, p.title, p.year, p.code
+          FROM problem_versions v JOIN official_problems p ON p.problem_id = v.problem_id
+          WHERE v.source_pdf_sha256=? ORDER BY v.version_no DESC LIMIT 1`,
+    args: [sha],
+  });
+  return rs.rows[0] || null;
+}
+
+export async function getDraftVersion(problemId: string) {
+  await ensureSchema();
+  const rs = await db().execute({
+    sql: `SELECT version_id, version_no, status, raw_text FROM problem_versions
+          WHERE problem_id=? AND status != 'published' ORDER BY version_no DESC LIMIT 1`,
+    args: [problemId],
+  });
+  return rs.rows[0] || null;
+}
+
+export async function getPublishedVersion(problemId: string) {
+  await ensureSchema();
+  const rs = await db().execute({
+    sql: `SELECT version_id, version_no, published_at FROM problem_versions
+          WHERE problem_id=? AND status='published' ORDER BY version_no DESC LIMIT 1`,
+    args: [problemId],
+  });
+  return rs.rows[0] || null;
+}
+
+/** 读取某版本的完整内容 */
+export async function getVersionContent(versionId: string) {
+  await ensureSchema();
+  const [ver, reqs, items, notes, reviews] = await Promise.all([
+    db().execute({
+      sql: `SELECT v.*, p.year, p.code, p.title, p.group_name FROM problem_versions v
+            JOIN official_problems p ON p.problem_id=v.problem_id WHERE v.version_id=?`, args: [versionId] }),
+    db().execute({ sql: "SELECT * FROM problem_requirements WHERE version_id=? ORDER BY sort_order, requirement_no", args: [versionId] }),
+    db().execute({ sql: "SELECT * FROM problem_scoring_items WHERE version_id=? ORDER BY sort_order", args: [versionId] }),
+    db().execute({ sql: "SELECT * FROM problem_notes WHERE version_id=? ORDER BY created_at", args: [versionId] }),
+    db().execute({ sql: "SELECT * FROM problem_reviews WHERE version_id=? ORDER BY created_at", args: [versionId] }),
+  ]);
+  if (!ver.rows.length) return null;
   return {
-    ...r,
-    requirements: parse(r.requirements, []),
-    scoring_items: parse(r.scoring_items, []),
+    version: ver.rows[0] as any,
+    requirements: (reqs.rows as any[]).map((r) => ({ ...r, id: r.requirement_no })),
+    scoring_items: (items.rows as any[]).map((r) => ({
+      ...r,
+      requirement_ids: (() => { try { return JSON.parse(String(r.requirement_refs || "[]")); } catch { return []; } })(),
+    })),
+    notes: notes.rows as any[],
+    reviews: reviews.rows as any[],
   };
 }
 
-export async function listProblems(opts: { status?: string; year?: number; publishedOnly?: boolean } = {}) {
-  await ensureSchema();
-  const where: string[] = [];
-  const args: any[] = [];
-  if (opts.publishedOnly) where.push("status='published'");
-  else if (opts.status) { where.push("status=?"); args.push(opts.status); }
-  if (opts.year) { where.push("year=?"); args.push(opts.year); }
-  const rs = await db().execute({
-    sql: `SELECT problem_id, year, code, title, group_name, status, problem_version, published_at,
-            (SELECT COUNT(*) FROM problem_review_diffs d WHERE d.problem_id = p.problem_id AND d.resolved = 0) AS open_diffs
-          FROM official_problems p
-          ${where.length ? "WHERE " + where.join(" AND ") : ""}
-          ORDER BY year DESC, code ASC LIMIT 200`,
-    args,
-  });
-  return rs.rows;
-}
-
-export async function saveExtraction(problemId: string, data: {
-  requirements?: any[]; scoringItems?: any[]; rawText?: string; notes?: string; reportRequirements?: string;
+/** 写入提取结果（仅草稿版本可写） */
+export async function saveExtraction(versionId: string, data: {
+  requirements?: any[]; scoringItems?: any[]; ambiguities?: any[]; rawText?: string;
 }) {
-  const sets: string[] = [];
-  const args: any[] = [];
-  if (data.requirements) { sets.push("requirements=?"); args.push(JSON.stringify(data.requirements)); }
-  if (data.scoringItems) { sets.push("scoring_items=?"); args.push(JSON.stringify(data.scoringItems)); }
-  if (data.rawText !== undefined) { sets.push("raw_text=?"); args.push(data.rawText); }
-  if (data.notes !== undefined) { sets.push("notes=?"); args.push(data.notes); }
-  if (data.reportRequirements !== undefined) { sets.push("report_requirements=?"); args.push(data.reportRequirements); }
-  if (!sets.length) return;
-  sets.push("updated_at=now()");
-  await db().execute({ sql: `UPDATE official_problems SET ${sets.join(", ")} WHERE problem_id=?`, args: [...args, problemId] });
+  await ensureSchema();
+  const v = await db().execute({ sql: "SELECT immutable, status FROM problem_versions WHERE version_id=?", args: [versionId] });
+  if (!v.rows.length) throw new Error("版本不存在");
+  if (Number((v.rows[0] as any).immutable) === 1 || String((v.rows[0] as any).status) === "published") {
+    throw new Error("已发布版本不可修改，请创建新版本后再编辑");
+  }
+
+  if (data.rawText !== undefined) {
+    await db().execute({ sql: "UPDATE problem_versions SET raw_text=? WHERE version_id=?", args: [data.rawText, versionId] });
+  }
+  if (data.requirements) {
+    await db().execute({ sql: "DELETE FROM problem_requirements WHERE version_id=?", args: [versionId] });
+    let i = 0;
+    for (const r of data.requirements) {
+      i++;
+      await db().execute({
+        sql: `INSERT INTO problem_requirements (req_id, version_id, requirement_no, type, description, target, unit,
+                tolerance, priority, verification_method, source_page, source_quote, status, sort_order)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        args: [uid("PRQ"), versionId, r.id || r.requirement_no || `REQ-${String(i).padStart(3, "0")}`,
+          r.type || null, r.description || "", r.target != null ? String(r.target) : null, r.unit || null,
+          r.tolerance || null, r.priority || "mandatory", r.verification_method || null,
+          r.source_page != null ? Number(r.source_page) : null, r.source_quote || r.source || null,
+          r.status || "AI_EXTRACTED", i],
+      });
+    }
+  }
+  if (data.scoringItems) {
+    await db().execute({ sql: "DELETE FROM problem_scoring_items WHERE version_id=?", args: [versionId] });
+    let i = 0;
+    for (const s of data.scoringItems) {
+      i++;
+      await db().execute({
+        sql: `INSERT INTO problem_scoring_items (item_id, version_id, item, points, points_type,
+                requirement_refs, source_page, source_quote, sort_order)
+              VALUES (?,?,?,?,?,?,?,?,?)`,
+        args: [uid("PSI"), versionId, s.item || "", s.points != null ? Number(s.points) : null,
+          s.points_type || "estimated", JSON.stringify(s.requirement_ids || []),
+          s.source_page != null ? Number(s.source_page) : null, s.source_quote || null, i],
+      });
+    }
+  }
+  if (data.ambiguities) {
+    await db().execute({ sql: "DELETE FROM problem_notes WHERE version_id=? AND kind='ambiguity'", args: [versionId] });
+    for (const a of data.ambiguities) {
+      const text = typeof a === "string" ? a : (a?.description || JSON.stringify(a));
+      await db().execute({
+        sql: "INSERT INTO problem_notes (note_id, version_id, kind, content) VALUES (?,?,'ambiguity',?)",
+        args: [uid("PN"), versionId, String(text).slice(0, 1000)],
+      });
+    }
+  }
+  await db().execute({ sql: "UPDATE problem_versions SET status='extracted' WHERE version_id=? AND status='draft'", args: [versionId] });
 }
 
-/** 双模复核差异：程序对比两个 Provider 的提取结果 */
-export function diffExtractions(a: { requirements: any[]; scoring_items: any[] }, b: { requirements: any[]; scoring_items: any[] }) {
-  const diffs: { field_path: string; value_a: string; value_b: string; severity: string }[] = [];
-  const norm = (s: any) => String(s ?? "").replace(/\s+/g, "").toLowerCase();
+/* ============ 双模复核差异匹配 ============ */
 
-  // 需求条数差异
-  if (a.requirements.length !== b.requirements.length) {
-    diffs.push({
-      field_path: "requirements.count",
-      value_a: String(a.requirements.length), value_b: String(b.requirements.length),
-      severity: "warning",
-    });
+const norm = (s: any) => String(s ?? "").replace(/\s+/g, "").toLowerCase();
+
+/** 字符二元组 Dice 相似度：对中文短句效果好且计算快 */
+export function similarity(a: string, b: string): number {
+  const x = norm(a), y = norm(b);
+  if (!x || !y) return 0;
+  if (x === y) return 1;
+  const bigrams = (s: string) => {
+    const out = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) {
+      const g = s.slice(i, i + 2);
+      out.set(g, (out.get(g) || 0) + 1);
+    }
+    return out;
+  };
+  const bx = bigrams(x), by = bigrams(y);
+  let inter = 0;
+  for (const [g, n] of bx) inter += Math.min(n, by.get(g) || 0);
+  const total = (x.length - 1) + (y.length - 1);
+  return total > 0 ? (2 * inter) / total : 0;
+}
+
+export interface MatchedPair {
+  a: any | null;
+  b: any | null;
+  method: "requirement_no" | "source_page" | "source_quote" | "unmatched";
+  confidence: number;
+}
+
+/** 多策略配对：编号 → 页码+描述 → 原文相似度 → 未匹配。
+ *  绝不按数组下标对齐 —— 一方多提取一条会导致后续全部错位、产生大量假差异。 */
+export function matchRequirements(listA: any[], listB: any[]): MatchedPair[] {
+  const pairs: MatchedPair[] = [];
+  const usedB = new Set<number>();
+  const idOf = (r: any) => r?.id || r?.requirement_no;
+  const quoteOf = (r: any) => r?.source_quote || r?.source || "";
+
+  for (const a of listA) {
+    let idx = listB.findIndex((b, i) => !usedB.has(i) && idOf(b) && idOf(a) && norm(idOf(b)) === norm(idOf(a)));
+    if (idx >= 0) { usedB.add(idx); pairs.push({ a, b: listB[idx], method: "requirement_no", confidence: 1 }); continue; }
+
+    const samePage = listB
+      .map((b, i) => ({ b, i }))
+      .filter(({ b, i }) => !usedB.has(i) && a.source_page != null && b.source_page != null
+        && Number(a.source_page) === Number(b.source_page));
+    if (samePage.length) {
+      const best = samePage
+        .map(({ b, i }) => ({ i, b, s: similarity(a.description, b.description) }))
+        .sort((x, y) => y.s - x.s)[0];
+      if (best && best.s >= 0.5) {
+        usedB.add(best.i);
+        pairs.push({ a, b: best.b, method: "source_page", confidence: best.s });
+        continue;
+      }
+    }
+
+    const byQuote = listB
+      .map((b, i) => ({ b, i, s: Math.max(similarity(quoteOf(a), quoteOf(b)), similarity(a.description, b.description)) }))
+      .filter(({ i }) => !usedB.has(i))
+      .sort((x, y) => y.s - x.s)[0];
+    if (byQuote && byQuote.s >= 0.6) {
+      usedB.add(byQuote.i);
+      pairs.push({ a, b: byQuote.b, method: "source_quote", confidence: byQuote.s });
+      continue;
+    }
+
+    pairs.push({ a, b: null, method: "unmatched", confidence: 0 });
   }
-  // 逐条比对描述与指标（按顺序对齐，简单但对赛题这类结构化文本够用）
-  const n = Math.max(a.requirements.length, b.requirements.length);
-  for (let i = 0; i < n; i++) {
-    const ra = a.requirements[i], rb = b.requirements[i];
-    if (!ra || !rb) {
+
+  listB.forEach((b, i) => {
+    if (!usedB.has(i)) pairs.push({ a: null, b, method: "unmatched", confidence: 0 });
+  });
+  return pairs;
+}
+
+export interface Diff {
+  field_path: string; requirement_no?: string | null;
+  value_a: string; value_b: string; severity: "critical" | "warning" | "info";
+  match_method: string; match_confidence: number;
+}
+
+export function diffExtractions(
+  a: { requirements: any[]; scoring_items: any[] },
+  b: { requirements: any[]; scoring_items: any[] },
+): Diff[] {
+  const diffs: Diff[] = [];
+  const pairs = matchRequirements(a.requirements || [], b.requirements || []);
+
+  for (const p of pairs) {
+    const no = (p.a?.id || p.a?.requirement_no || p.b?.id || p.b?.requirement_no) ?? null;
+    if (!p.a || !p.b) {
       diffs.push({
-        field_path: `requirements[${i}]`,
-        value_a: ra ? String(ra.description || "").slice(0, 120) : "（缺失）",
-        value_b: rb ? String(rb.description || "").slice(0, 120) : "（缺失）",
-        severity: "warning",
+        field_path: `requirements[${no ?? "?"}]`, requirement_no: no,
+        value_a: p.a ? String(p.a.description || "").slice(0, 160) : "（未提取到）",
+        value_b: p.b ? String(p.b.description || "").slice(0, 160) : "（未提取到）",
+        severity: "warning", match_method: p.method, match_confidence: p.confidence,
       });
       continue;
     }
-    if (norm(ra.description) !== norm(rb.description)) {
+    if (norm(p.a.description) !== norm(p.b.description)) {
+      const sim = similarity(p.a.description, p.b.description);
       diffs.push({
-        field_path: `requirements[${i}].description`,
-        value_a: String(ra.description || "").slice(0, 160),
-        value_b: String(rb.description || "").slice(0, 160),
-        severity: "info",
+        field_path: `requirements[${no}].description`, requirement_no: no,
+        value_a: String(p.a.description || "").slice(0, 160),
+        value_b: String(p.b.description || "").slice(0, 160),
+        severity: sim >= 0.8 ? "info" : "warning",
+        match_method: p.method, match_confidence: p.confidence,
       });
     }
-    // 量化指标不一致是高危：直接影响测试判定
-    if (norm(ra.target) !== norm(rb.target) || norm(ra.unit) !== norm(rb.unit) || norm(ra.tolerance) !== norm(rb.tolerance)) {
+    // 量化指标不一致 = 高危：直接影响测试判定与得分
+    if (norm(p.a.target) !== norm(p.b.target) || norm(p.a.unit) !== norm(p.b.unit) || norm(p.a.tolerance) !== norm(p.b.tolerance)) {
       diffs.push({
-        field_path: `requirements[${i}].target`,
-        value_a: `${ra.target ?? "—"}${ra.unit ?? ""} ${ra.tolerance ?? ""}`.trim(),
-        value_b: `${rb.target ?? "—"}${rb.unit ?? ""} ${rb.tolerance ?? ""}`.trim(),
-        severity: "critical",
+        field_path: `requirements[${no}].target`, requirement_no: no,
+        value_a: `${p.a.target ?? "—"}${p.a.unit ?? ""} ${p.a.tolerance ?? ""}`.trim(),
+        value_b: `${p.b.target ?? "—"}${p.b.unit ?? ""} ${p.b.tolerance ?? ""}`.trim(),
+        severity: "critical", match_method: p.method, match_confidence: p.confidence,
+      });
+    }
+    if (norm(p.a.priority) !== norm(p.b.priority)) {
+      diffs.push({
+        field_path: `requirements[${no}].priority`, requirement_no: no,
+        value_a: String(p.a.priority ?? ""), value_b: String(p.b.priority ?? ""),
+        severity: "warning", match_method: p.method, match_confidence: p.confidence,
       });
     }
   }
-  // 评分项：分值不一致同样高危
+
   const sa = a.scoring_items || [], sb = b.scoring_items || [];
-  if (sa.length !== sb.length) {
-    diffs.push({ field_path: "scoring_items.count", value_a: String(sa.length), value_b: String(sb.length), severity: "warning" });
-  }
-  const sn = Math.max(sa.length, sb.length);
-  for (let i = 0; i < sn; i++) {
-    const x = sa[i], y = sb[i];
-    if (!x || !y) continue;
-    if (Number(x.points ?? -1) !== Number(y.points ?? -1)) {
+  const usedB = new Set<number>();
+  for (const x of sa) {
+    const best = sb.map((y, i) => ({ y, i, s: similarity(x.item, y.item) }))
+      .filter(({ i }) => !usedB.has(i)).sort((m, n) => n.s - m.s)[0];
+    if (!best || best.s < 0.5) {
+      diffs.push({ field_path: `scoring_items[${x.item}]`, value_a: `${x.item}: ${x.points ?? "—"}`,
+        value_b: "（未提取到）", severity: "warning", match_method: "unmatched", match_confidence: 0 });
+      continue;
+    }
+    usedB.add(best.i);
+    if (Number(x.points ?? -1) !== Number(best.y.points ?? -1)) {
       diffs.push({
-        field_path: `scoring_items[${i}].points`,
-        value_a: `${x.item ?? ""}: ${x.points ?? "—"}`,
-        value_b: `${y.item ?? ""}: ${y.points ?? "—"}`,
-        severity: "critical",
+        field_path: `scoring_items[${x.item}].points`,
+        value_a: `${x.item}: ${x.points ?? "—"}`, value_b: `${best.y.item}: ${best.y.points ?? "—"}`,
+        severity: "critical", match_method: "source_quote", match_confidence: best.s,
       });
     }
   }
+  sb.forEach((y, i) => {
+    if (!usedB.has(i)) diffs.push({ field_path: `scoring_items[${y.item}]`, value_a: "（未提取到）",
+      value_b: `${y.item}: ${y.points ?? "—"}`, severity: "warning", match_method: "unmatched", match_confidence: 0 });
+  });
+
   return diffs;
 }
 
-export async function saveDiffs(problemId: string, diffs: any[], providerA: string, providerB: string) {
-  await db().execute({ sql: "DELETE FROM problem_review_diffs WHERE problem_id=? AND resolved=0", args: [problemId] }).catch(() => {});
+export async function saveDiffs(versionId: string, problemId: string, diffs: Diff[], providerA: string, providerB: string) {
+  await db().execute({ sql: "DELETE FROM problem_review_diffs WHERE version_id=? AND resolved=0", args: [versionId] }).catch(() => {});
   for (const d of diffs) {
     await db().execute({
-      sql: `INSERT INTO problem_review_diffs (problem_id, field_path, provider_a, provider_b, value_a, value_b, severity)
-            VALUES (?,?,?,?,?,?,?)`,
-      args: [problemId, d.field_path, providerA, providerB, d.value_a?.slice(0, 500), d.value_b?.slice(0, 500), d.severity],
+      sql: `INSERT INTO problem_review_diffs (problem_id, version_id, requirement_no, field_path,
+              provider_a, provider_b, value_a, value_b, severity, match_method, match_confidence)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      args: [problemId, versionId, d.requirement_no ?? null, d.field_path, providerA, providerB,
+        d.value_a?.slice(0, 500), d.value_b?.slice(0, 500), d.severity, d.match_method, d.match_confidence],
     }).catch(() => {});
   }
 }
 
-export async function publishProblem(problemId: string, publishedBy: string) {
+/* ============ 发布清单与不可变版本 ============ */
+
+export interface ChecklistItem { key: string; label: string; passed: boolean; detail: string }
+
+/** 发布前检查。全部通过（或 admin 显式 override）才允许发布。 */
+export async function publicationChecklist(versionId: string): Promise<{ items: ChecklistItem[]; passed: boolean }> {
   await ensureSchema();
-  const open = await db().execute({
-    sql: "SELECT COUNT(*) n FROM problem_review_diffs WHERE problem_id=? AND resolved=0 AND severity='critical'",
-    args: [problemId],
+  const content = await getVersionContent(versionId);
+  const items: ChecklistItem[] = [];
+  if (!content) return { items: [{ key: "exists", label: "版本存在", passed: false, detail: "版本不存在" }], passed: false };
+
+  const reqs = content.requirements;
+  const scoring = content.scoring_items;
+
+  items.push({ key: "has_requirements", label: "已提取需求", passed: reqs.length > 0, detail: `${reqs.length} 条` });
+
+  const pending = reqs.filter((r) => !["CONFIRMED", "REJECTED"].includes(String(r.status)));
+  items.push({
+    key: "all_confirmed", label: "需求全部确认或驳回",
+    passed: pending.length === 0,
+    detail: pending.length ? `${pending.length} 条待确认：${pending.slice(0, 3).map((r) => r.requirement_no).join("、")}` : "全部已处理",
   });
-  if (Number(open.rows[0]?.n || 0) > 0) {
-    return { ok: false, error: `还有 ${open.rows[0].n} 处关键差异（指标/分值）未确认，不能发布` };
+
+  const noSource = reqs.filter((r) => String(r.status) !== "REJECTED" && !r.source_quote && r.source_page == null);
+  items.push({
+    key: "has_source", label: "每条需求有页码或原文引用",
+    passed: noSource.length === 0,
+    detail: noSource.length ? `${noSource.length} 条缺溯源：${noSource.slice(0, 3).map((r) => r.requirement_no).join("、")}` : "全部有溯源",
+  });
+
+  const diffs = await db().execute({
+    sql: "SELECT COUNT(*) n FROM problem_review_diffs WHERE version_id=? AND resolved=0 AND severity='critical'",
+    args: [versionId],
+  }).catch(() => ({ rows: [{ n: 0 }] as any[] }));
+  const crit = Number((diffs.rows[0] as any)?.n || 0);
+  items.push({ key: "no_critical_diff", label: "无未确认的关键差异", passed: crit === 0, detail: crit ? `${crit} 处指标/分值差异待确认` : "无" });
+
+  const amb = content.notes.filter((n) => String(n.kind) === "ambiguity" && Number(n.resolved) === 0);
+  items.push({ key: "ambiguity_resolved", label: "题面歧义已处理", passed: amb.length === 0, detail: amb.length ? `${amb.length} 条未处理` : "无" });
+
+  const official = scoring.filter((s) => String(s.points_type) === "official" && s.points != null);
+  const total = official.reduce((a, s) => a + Number(s.points), 0);
+  const sane = official.length === 0 || (total > 0 && total <= 200);
+  items.push({
+    key: "scoring_total", label: "官方评分总分合理",
+    passed: sane, detail: official.length ? `官方分值 ${official.length} 项，合计 ${total}` : "题面未给官方分值（按估算口径）",
+  });
+
+  const unbound = official.filter((s) => !(s.requirement_ids || []).length);
+  items.push({
+    key: "scoring_bound", label: "官方评分项已绑定需求",
+    passed: unbound.length === 0,
+    detail: unbound.length ? `${unbound.length} 项未绑定` : official.length ? "全部已绑定" : "无官方分值项",
+  });
+
+  const reviewers = new Set(content.reviews.filter((r) => String(r.decision) === "approve").map((r) => String(r.reviewer)));
+  items.push({
+    key: "two_reviewers", label: "至少两名工作人员审核通过",
+    passed: reviewers.size >= 2, detail: `${reviewers.size} 人已通过`,
+  });
+
+  return { items, passed: items.every((i) => i.passed) };
+}
+
+export async function addReview(versionId: string, reviewer: string, decision: "approve" | "reject", note?: string) {
+  await ensureSchema();
+  await db().execute({
+    sql: "INSERT INTO problem_reviews (review_id, version_id, reviewer, decision, note) VALUES (?,?,?,?,?)",
+    args: [uid("PRV"), versionId, reviewer, decision, note || null],
+  });
+}
+
+/** 发布版本：通过清单后冻结为不可变版本。 */
+export async function publishVersion(versionId: string, publishedBy: string, override = false):
+  Promise<{ ok: boolean; error?: string; checklist?: ChecklistItem[] }> {
+  await ensureSchema();
+  const { items, passed } = await publicationChecklist(versionId);
+  if (!passed && !override) {
+    const failed = items.filter((i) => !i.passed).map((i) => i.label).join("、");
+    return { ok: false, error: `发布清单未通过：${failed}`, checklist: items };
   }
-  const p = await getProblem(problemId);
-  if (!p) return { ok: false, error: "题目不存在" };
-  if (!p.requirements?.length) return { ok: false, error: "尚未提取出需求，不能发布" };
+
+  const content = await getVersionContent(versionId);
+  if (!content) return { ok: false, error: "版本不存在" };
+  const hash = createHash("sha256")
+    .update(JSON.stringify({ r: content.requirements, s: content.scoring_items }))
+    .digest("hex").slice(0, 32);
 
   await db().execute({
-    sql: `UPDATE official_problems SET status='published', published_by=?, published_at=now(),
-            problem_version = problem_version + 1, updated_at=now() WHERE problem_id=?`,
-    args: [publishedBy, problemId],
+    sql: `UPDATE problem_versions SET status='published', published_by=?, published_at=now(),
+            immutable=1, content_hash=? WHERE version_id=? AND status != 'published'`,
+    args: [publishedBy + (override ? " (override)" : ""), hash, versionId],
   });
-  return { ok: true };
+  await db().execute({
+    sql: `UPDATE official_problems SET status='published', updated_at=now()
+          WHERE problem_id=(SELECT problem_id FROM problem_versions WHERE version_id=?)`,
+    args: [versionId],
+  });
+  return { ok: true, checklist: items };
+}
+
+export async function listProblems(opts: { publishedOnly?: boolean; year?: number } = {}) {
+  await ensureSchema();
+  const where: string[] = [];
+  const args: any[] = [];
+  if (opts.year) { where.push("p.year=?"); args.push(opts.year); }
+  const rs = await db().execute({
+    sql: `SELECT p.problem_id, p.year, p.code, p.title, p.group_name, p.status,
+            (SELECT version_no FROM problem_versions v WHERE v.problem_id=p.problem_id AND v.status='published' ORDER BY version_no DESC LIMIT 1) published_version,
+            (SELECT version_id FROM problem_versions v WHERE v.problem_id=p.problem_id AND v.status='published' ORDER BY version_no DESC LIMIT 1) published_version_id,
+            (SELECT COUNT(*) FROM problem_review_diffs d
+               JOIN problem_versions v2 ON v2.version_id = d.version_id
+               WHERE v2.problem_id = p.problem_id AND d.resolved = 0 AND d.severity='critical') open_critical
+          FROM official_problems p
+          ${where.length ? "WHERE " + where.join(" AND ") : ""}
+          ORDER BY p.year DESC, p.code ASC LIMIT 200`,
+    args,
+  });
+  const rows = rs.rows as any[];
+  return opts.publishedOnly ? rows.filter((r) => r.published_version_id) : rows;
 }

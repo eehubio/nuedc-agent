@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { db, uid, ensureSchema } from "../db";
 import type { AgentType, ProjectStage } from "../types";
 import { STAGE_ALLOWED_AGENTS } from "../types";
@@ -26,13 +27,46 @@ export function registerAgent(type: AgentType, fn: AgentFn) {
   registry.set(type, fn);
 }
 
-/** 当前 Agent 运行上下文（供 llmJson 记账到用户/项目/任务）。
- *  Node 单请求内串行执行，用模块级变量即可；跨请求不共享。 */
-let _ctx: { owner?: string | null; projectId?: string | null; taskId?: string | null; agent?: string } = {};
-export function currentAgentContext() { return _ctx; }
-export function setAgentContext(c: typeof _ctx) { _ctx = c; }
+/** Agent 运行上下文。
+ *  必须用 AsyncLocalStorage：模块级变量在同一 Node 实例并发处理多请求时会串用户、
+ *  把 A 用户的 token 用量记到 B 用户的项目上。ALS 保证每条异步调用链各自隔离。 */
+export interface AgentRunContext {
+  owner?: string | null;
+  projectId?: string | null;
+  taskId?: string | null;
+  agent?: string;
+  /** 本次运行中网关是否返回过 partial 结果（截断后修复）。
+   *  放在 ALS 上下文里而非模块级变量，避免并发串线。 */
+  partialSeen?: { value: boolean };
+}
 
-export async function runAgent(
+const agentContextStore = new AsyncLocalStorage<AgentRunContext>();
+
+/** 读取当前调用链的上下文；不在 Agent 执行链中时返回空对象（退化为不记账，绝不串线） */
+export function currentAgentContext(): AgentRunContext {
+  return agentContextStore.getStore() ?? {};
+}
+
+/** 在隔离的上下文中执行 —— 所有 Agent 执行必须经此包裹 */
+export function withAgentContext<T>(ctx: AgentRunContext, fn: () => Promise<T>): Promise<T> {
+  return agentContextStore.run(ctx, fn);
+}
+
+/** 执行 Agent。整个调用链在独立的 AsyncLocalStorage 上下文中运行，
+ *  确保并发请求之间的 owner/project/task 绝不互相污染。 */
+export function runAgent(
+  type: AgentType,
+  input: any,
+  ctx: AgentContext
+): Promise<AgentResult & { run_id: string }> {
+  return withAgentContext(
+    { owner: ctx.owner ?? null, projectId: ctx.projectId, taskId: ctx.taskId ?? null, agent: type,
+      partialSeen: { value: false } },
+    () => runAgentInner(type, input, ctx),
+  );
+}
+
+async function runAgentInner(
   type: AgentType,
   input: any,
   ctx: AgentContext
@@ -40,7 +74,7 @@ export async function runAgent(
   await ensureSchema();
   const runId = uid("RUN");
   const t0 = Date.now();
-  setAgentContext({ owner: (ctx as any).owner ?? null, projectId: ctx.projectId, taskId: (ctx as any).taskId ?? null, agent: type });
+
 
   // 状态门禁：项目状态机决定允许调用哪些 Agent
   const allowed = STAGE_ALLOWED_AGENTS[ctx.stage] || [];
@@ -167,4 +201,16 @@ export function moduleCatalogForLlm(
     })
     .join("\n");
   return omitted > 0 ? `${body}\n（另有 ${omitted} 个模块未列出，如需其他器件可将 module_id 留空并在 name 中说明）` : body;
+}
+
+
+/** 标记本次 Agent 运行收到过不完整（截断修复）的模型输出 */
+export function markPartial(): void {
+  const c = currentAgentContext();
+  if (c.partialSeen) c.partialSeen.value = true;
+}
+
+/** 本次 Agent 运行是否出现过 partial 输出 */
+export function sawPartial(): boolean {
+  return currentAgentContext().partialSeen?.value === true;
 }

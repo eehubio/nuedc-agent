@@ -3,11 +3,14 @@ import { db, ensureSchema } from "../db";
 import type { TaskPolicy } from "./task-policy";
 
 /** 结果缓存。Key 包含 promptVersion 与 model，避免升级后返回陈旧结果。 */
-export const PROMPT_VERSION = "v1";
+export const PROMPT_VERSION = "v2";
+/** Schema 结构版本：schema 变更后旧缓存必须失效，否则会返回不再合法的旧结构 */
+export const SCHEMA_VERSION = "s1";
 
 export function buildCacheKey(opts: {
   taskType: string; input: unknown; projectId?: string | null;
-  problemVersion?: string; moduleCatalogVersion?: string; model: string; scope: string;
+  problemVersion?: string; moduleCatalogVersion?: string;
+  provider?: string; model: string; scope: string;
 }): string {
   const payload = JSON.stringify({
     t: opts.taskType,
@@ -16,7 +19,10 @@ export function buildCacheKey(opts: {
     pv: opts.problemVersion || "",
     mv: opts.moduleCatalogVersion || "",
     pr: PROMPT_VERSION,
-    m: opts.model,
+    sv: SCHEMA_VERSION,
+    // 缓存归属到「实际产出结果的 provider:model」，
+    // 否则 Gemini 失败 → Qwen 成功后会把结果写进 Gemini 的 key（读取时张冠李戴）
+    m: `${opts.provider || ""}:${opts.model}`,
   });
   return createHash("sha256").update(payload).digest("hex");
 }
@@ -51,4 +57,12 @@ export async function cacheSet(key: string, policy: TaskPolicy, output: string, 
       args: [key, policy.taskType, policy.cacheScope, output.slice(0, 400_000), provider, model, String(days)],
     });
   } catch { /* 缓存写入失败不影响主流程 */ }
+}
+
+
+/** 删除某条缓存（Schema 校验失败时清理坏结果） */
+export async function cacheDelete(key: string): Promise<void> {
+  try {
+    await db().execute({ sql: "DELETE FROM model_cache WHERE cache_key=?", args: [key] });
+  } catch { /* 忽略 */ }
 }

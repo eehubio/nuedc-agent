@@ -70,10 +70,12 @@ export async function cancelActiveTask() {
 export async function pollTask(taskId: string, ignite: boolean, onProgress?: ProgressFn): Promise<AgentResult & { agent?: string }> {
   _activeTask = taskId;
   let direct: AgentResult | null = null;
-  // 点火请求本身会同步跑完并回传结果 —— 拿到就用（轮询仅作为刷新恢复/丢包时的后备）
+  // 后台 Worker 消费队列，前端只轮询。
+  // 仅当服务端明确未部署 Worker（返回 worker_mode=false 的降级路径）时才回退到点火。
   const fire = () => fetch(`/api/agent-tasks/${taskId}/execute`, { method: "POST", keepalive: true })
     .then(safeJson)
     .then((d) => {
+      if (d?.worker_mode) return;          // Worker 模式：忽略，继续轮询
       if (d?.status === "ok" && d.result) direct = d.result as AgentResult;
       else if (d?.status === "error") direct = (d.result as AgentResult) || { ok: false, output: null, message: d.error || "运行失败" };
       else if (d?.status === "canceled") direct = { ok: false, output: null, message: "任务已取消" };
@@ -94,6 +96,8 @@ export async function pollTask(taskId: string, ignite: boolean, onProgress?: Pro
         return { ...(st.result as AgentResult), agent: st.agent, provider: st.model, fallback_used: st.fallback_used };
       }
       if (st.status === "canceled") return { ok: false, output: null, message: "任务已取消", agent: st.agent };
+      if (st.status === "dead") return { ok: false, output: null, agent: st.agent,
+        message: st.error || "任务多次重试后仍失败，请稍后重试；若持续失败请联系管理员。" };
       if (st.status === "error") return (st.result && { ...(st.result as AgentResult), agent: st.agent }) || { ok: false, output: null, message: st.error || "运行失败", agent: st.agent };
       if (st.status === "queued" && !reIgnited && Date.now() - t0 > 12_000) { reIgnited = true; fire(); }
     }

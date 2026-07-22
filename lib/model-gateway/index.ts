@@ -2,7 +2,7 @@ import type { z } from "zod";
 import { route } from "./router";
 import { policyFor, type TaskType } from "./task-policy";
 import { recordCall } from "./health";
-import { buildCacheKey, cacheGet, cacheSet, inputHash } from "./cache";
+import { buildCacheKey, cacheGet, cacheSet, cacheDelete, inputHash } from "./cache";
 import { recordUsageEvent, checkBudget, estimateCost } from "./telemetry";
 import { ProviderError, type ChatMessage } from "./providers";
 import { getSystemMode, allowsPriority } from "../system-mode";
@@ -25,7 +25,11 @@ export interface GatewayRequest<T = unknown> {
   allowFallback?: boolean;
   allowCache?: boolean;
   maxOutputTokens?: number;
+  /** 指定 Provider。仅 admin / worker / 系统内部可用；
+   *  普通用户请求传入会被忽略（否则可指定贵模型刷成本）。 */
   providerHint?: string | null;
+  /** 调用来源，决定 providerHint 是否被采纳 */
+  caller?: "user" | "admin" | "worker" | "system";
   /** 多模态输入 */
   pdfBase64?: string;
   imageBase64?: string;
@@ -39,6 +43,8 @@ export interface GatewayResult<T = unknown> {
   ok: boolean;
   provider: string;
   model: string;
+  /** 为什么选中这个模型（运营后台可解释性） */
+  routingReason?: string;
   output: T | null;
   rawText: string;
   usage: { inputTokens: number; outputTokens: number; cachedTokens: number };
@@ -97,36 +103,58 @@ export const modelGateway = {
     }
 
     // 3) 选路
-    const candidates = await route(policy, { hint: req.providerHint, needPdf: !!req.pdfBase64 });
+    // providerHint 权限控制：非特权调用方的指定一律忽略
+    const hintAllowed = req.caller === "admin" || req.caller === "worker" || req.caller === "system"
+      || process.env.ALLOW_USER_PROVIDER_HINT === "1";
+    const effectiveHint = hintAllowed ? req.providerHint : null;
+    const candidates = await route(policy, { hint: effectiveHint, needPdf: !!req.pdfBase64 });
     if (!candidates.length) {
       const reason = "所有模型服务当前不可用（未配置或已熔断）。项目数据、模块库、BOM、接口检查、测试评分与报告编辑仍可正常使用。";
       return { ...base, errorCode: "NO_PROVIDER", message: reason, degraded: { mode: "RULES_ONLY", reason }, latency: Date.now() - t0 };
     }
 
-    // 4) 缓存（按最优候选的模型算 key）
+    // 4) 缓存：按候选逐个查各自的 key（缓存归属实际产出者，不能只查第一候选）
     const allowCache = req.allowCache ?? policy.allowCache;
-    const cacheKey = allowCache
-      ? buildCacheKey({
-          taskType: req.taskType, input: { s: req.system, m: req.messages }, projectId: req.projectId,
-          problemVersion: req.problemVersion, moduleCatalogVersion: req.moduleCatalogVersion,
-          model: candidates[0].model, scope: policy.cacheScope,
-        })
-      : "";
-    if (allowCache && cacheKey) {
-      const hit = await cacheGet(cacheKey);
-      if (hit) {
+    const keyFor = (provider: string, model: string) => buildCacheKey({
+      taskType: req.taskType, input: { s: req.system, m: req.messages }, projectId: req.projectId,
+      problemVersion: req.problemVersion, moduleCatalogVersion: req.moduleCatalogVersion,
+      provider, model, scope: policy.cacheScope,
+    });
+
+    if (allowCache) {
+      for (const c of candidates) {
+        const k = keyFor(c.provider.id, c.model);
+        const hit = await cacheGet(k);
+        if (!hit) continue;
+
         const parsedHit = req.json !== false ? extractJson(hit.output) : { parsed: hit.output, partial: false };
-        const validated = req.schema && parsedHit ? req.schema.safeParse(parsedHit.parsed) : null;
+        let hitOutput: any = parsedHit?.parsed;
+        let hitValid = true;
+        let hitIssues: string[] | undefined;
+        if (req.schema && parsedHit) {
+          const v = req.schema.safeParse(parsedHit.parsed);
+          if (v.success) hitOutput = v.data;
+          else {
+            hitValid = false;
+            hitIssues = v.error.issues.slice(0, 5).map((i) => `${i.path.join(".")}: ${i.message}`);
+          }
+        }
+        // 缓存内容已不符合当前 schema（如 schema 升级）→ 丢弃该缓存并继续走真实调用
+        if (!hitValid && policy.schemaMode === "strict") {
+          await cacheDelete(k);
+          continue;
+        }
+        if (!parsedHit) { await cacheDelete(k); continue; }
+
         await recordUsageEvent({
           owner: req.owner, projectId: req.projectId, taskId: req.taskId, taskType: req.taskType,
-          provider: hit.provider || "cache", model: hit.model, inputTokens: 0, outputTokens: 0,
-          latencyMs: Date.now() - t0, status: "cache_hit", cacheHit: true,
+          provider: hit.provider || c.provider.id, model: hit.model || c.model,
+          inputTokens: 0, outputTokens: 0, latencyMs: Date.now() - t0, status: "cache_hit", cacheHit: true,
         });
         return {
-          ...base, ok: true, provider: hit.provider || "cache", model: hit.model,
-          output: (validated?.success ? validated.data : parsedHit?.parsed) as T,
-          rawText: hit.output, cacheHit: true, latency: Date.now() - t0,
-          validation: { ok: validated ? validated.success : true },
+          ...base, ok: true, provider: hit.provider || c.provider.id, model: hit.model || c.model,
+          output: hitOutput as T, rawText: hit.output, cacheHit: true, latency: Date.now() - t0,
+          validation: { ok: hitValid, issues: hitIssues },
         };
       }
     }
@@ -137,6 +165,8 @@ export const modelGateway = {
     let retryCount = 0;
     let fallbackUsed = false;
     let lastError: ProviderError | Error | null = null;
+    let lastErrorCode: string | null = null;
+    let lastValidation: { ok: boolean; issues?: string[] } | null = null;
 
     for (let ci = 0; ci < candidates.length; ci++) {
       const { provider, model } = candidates[ci];
@@ -178,7 +208,7 @@ export const modelGateway = {
             }
             output = parsed.parsed;
             partial = partial || parsed.partial;
-            if (req.schema) {
+            if (req.schema && policy.schemaMode !== "none") {
               const v = req.schema.safeParse(output);
               if (v.success) output = v.data;
               else validation = { ok: false, issues: v.error.issues.slice(0, 5).map((i) => `${i.path.join(".")}: ${i.message}`) };
@@ -188,16 +218,26 @@ export const modelGateway = {
           const cost = await recordUsageEvent({
             owner: req.owner, projectId: req.projectId, taskId: req.taskId, taskType: req.taskType,
             provider: provider.id, model, inputTokens: res.inputTokens, outputTokens: res.outputTokens,
-            latencyMs, status: "success", fallbackUsed,
+            latencyMs, status: validation.ok ? "success" : "error",
+            errorCode: validation.ok ? undefined : "SCHEMA_INVALID", fallbackUsed,
           });
 
-          // 只有完整且通过校验的结果才写缓存
-          if (allowCache && cacheKey && !partial && validation.ok) {
-            await cacheSet(cacheKey, policy, res.text, provider.id, model);
+          // strict 模式下 Schema 失败 = 调用失败：不缓存、不返回 ok，尝试下一次/下一家
+          if (!validation.ok && policy.schemaMode === "strict") {
+            lastError = new Error(`Schema 校验失败：${(validation.issues || []).join("；")}`);
+            lastErrorCode = "SCHEMA_INVALID";
+            lastValidation = validation;
+            continue;
+          }
+
+          // 只有完整且通过校验的结果才写缓存，且归属到实际产出的 provider:model
+          if (allowCache && !partial && validation.ok) {
+            await cacheSet(keyFor(provider.id, model), policy, res.text, provider.id, model);
           }
 
           return {
-            ok: true, provider: provider.id, model, output: output as T, rawText: res.text,
+            ok: true, provider: provider.id, model, routingReason: candidates[ci].reason,
+            output: output as T, rawText: res.text,
             usage: { inputTokens: res.inputTokens, outputTokens: res.outputTokens, cachedTokens: 0 },
             latency: Date.now() - t0, cacheHit: false, fallbackUsed, retryCount,
             partial, validation, costEstimate: cost,
@@ -223,11 +263,14 @@ export const modelGateway = {
       if (!allowFallback) break;
     }
 
-    const code = lastError instanceof ProviderError ? lastError.code : "UNKNOWN";
+    const code = lastErrorCode || (lastError instanceof ProviderError ? lastError.code : "UNKNOWN");
     return {
       ...base, retryCount, fallbackUsed, latency: Date.now() - t0,
       errorCode: code,
-      message: `模型调用失败（${code}）：${lastError?.message || "未知原因"}`,
+      validation: lastValidation || { ok: false },
+      message: code === "SCHEMA_INVALID"
+        ? `模型输出不符合预期结构：${(lastValidation?.issues || []).join("；") || lastError?.message}`
+        : `模型调用失败（${code}）：${lastError?.message || "未知原因"}`,
     };
   },
 

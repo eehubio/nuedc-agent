@@ -8,7 +8,20 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 /** 点火：原子认领 queued 任务并同步执行（每次尝试在 agent_runs 各留一条执行日志）。 */
-export async function POST(_req: NextRequest, { params }: { params: { id: string } }) {
+/** 同步点火（仅 admin/debug）。
+ *  生产环境由常驻 Worker（scripts/agent-worker.mts）消费队列，本路由默认关闭：
+ *  设 ALLOW_INLINE_EXECUTE=1 可临时启用（如 Worker 未部署时的降级路径）。 */
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  const inlineAllowed = process.env.ALLOW_INLINE_EXECUTE === "1" || process.env.WORKER_ENABLED === "0";
+  if (!inlineAllowed) {
+    const { resolveTier } = await import("@/lib/auth");
+    if (resolveTier(req) !== "admin") {
+      return NextResponse.json({
+        error: "任务由后台 Worker 执行，无需前端点火。若 Worker 未部署，可设 ALLOW_INLINE_EXECUTE=1 临时启用。",
+        worker_mode: true,
+      }, { status: 409 });
+    }
+  }
   await ensureSchema();
   const claim = await db().execute({
     sql: `UPDATE agent_tasks SET status='running', attempts=attempts+1, started_at=now(), updated_at=now()

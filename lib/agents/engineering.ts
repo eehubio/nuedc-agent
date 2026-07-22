@@ -1,7 +1,8 @@
 // 工程类 Agent：方案架构、接口集成检查、BOM 整理、备料规划
-import { llmJson, lastRepairApplied } from "../llm";
-import { registerAgent, loadModuleIndex, moduleCatalogForLlm } from "./base";
-import { buildContext, preFilterModules } from "../model-gateway/context-builder";
+import { llmJson } from "../llm";
+import { registerAgent, loadModuleIndex, moduleCatalogForLlm, sawPartial } from "./base";
+import { buildContext } from "../model-gateway/context-builder";
+import { buildModuleContext, extractTags } from "../module-search";
 import { solutionSchema, connectionSchema, powerRailSchema, parseArrayLoose, bomItemSchema } from "../agent-schemas";
 import { checkIntegration } from "../rules/integration-rules";
 import { applyQuantityRules, flagForReview } from "../rules/procurement-rules";
@@ -22,16 +23,15 @@ registerAgent("solution_architect", async (input) => {
   // 不修改调用方传入的对象（旧问题 3）：用副本，避免前端状态被意外改写
   const requirementsForGen = { ...requirements, requirements: reqList.filter((r) => r.status !== "REJECTED") };
 
-  // 模块预筛选：程序侧按证据等级/关键词/接口/电压粗排，只把 top 20 送进模型
-  const candidateModules = preFilterModules(Object.values(index), {
-    requirements: requirementsForGen.requirements,
+  // 模块 Top-K 检索：程序侧按可见范围/类别/电压/接口/库存过滤并打分，只把前 20 送进模型
+  const moduleCtx = buildModuleContext(Object.values(index), {
+    viewerRef: input.owner_ref || null,
+    orgRef: input.org_ref || null,
+    requirementTags: extractTags(requirementsForGen.requirements),
     preferred: input.preferred_modules || [],
-    limit: 20,
+    topK: 20,
   });
-  const catalog = moduleCatalogForLlm(
-    Object.fromEntries(candidateModules.map((m: any) => [m.id, m])),
-    { preferred: input.preferred_modules || [], limit: 20 },
-  );
+  const catalog = moduleCtx.text;
 
 
   // ---- 分次生成：两套方案各一次调用，单次输出量减半，从根本上避免截断 ----
@@ -50,14 +50,12 @@ ${catalog || "（模块库为空，允许方案使用通用模块名，module_id
   // 上下文组装：按优先级纳入需求与模块，并产出 manifest 供 UI 提示省略项
   const built = buildContext({
     requirements: requirementsForGen.requirements,
-    modules: candidateModules,
     constraints: input.constraints,
     budgetTokens: 3000,
-    maxModules: 20,
   });
   const reqAll = (requirementsForGen.requirements || []) as any[];
   const reqOmitted = built.manifest.omittedRequirementIds;
-  const contextManifest = built.manifest;
+  const contextManifest = { ...built.manifest, ...moduleCtx.manifest };
   const userCtx = built.text + (input.preferred_modules?.length ? `\n用户优先模块：${JSON.stringify(input.preferred_modules)}` : "");
 
   // 容错解析：模型可能返回 {solution:{...}}、直接 {...}、或把 blocks 叫别的名字
@@ -154,7 +152,7 @@ ${catalog || "（模块库为空，允许方案使用通用模块名，module_id
   if (!usable.length) {
     return { ok: false, output: null, message: `方案结构不完整：${lastError || "缺少功能块"}` };
   }
-  const partial = lastRepairApplied();
+  const partial = sawPartial();
   const truncation_note = partial
     ? "本次输出曾被截断并自动修复，方案可能不完整（例如缺少部分连线或功能块）—— 请仔细核对后再确认为主方案，或重新生成。"
     : undefined;
@@ -262,7 +260,7 @@ ${JSON.stringify((solution?.connections || []).slice(0, 20)).slice(0, 1500)}`;
   items = flagForReview(items);
   items = items.map((it: any, i: number) => ({ ...it, line_id: it.line_id || `BOM-${String(i + 1).padStart(3, "0")}` }));
 
-  const bomPartial = lastRepairApplied();
+  const bomPartial = sawPartial();
   const needReview = items.filter((i) => i.needs_review).length;
   return {
     ok: true,
