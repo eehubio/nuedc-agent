@@ -40,22 +40,32 @@ ${catalog || "（模块库为空，允许方案使用通用模块名，module_id
       system: `${SHARED_RULES}\n\n本次只生成【一套】方案，solution_id 固定为 "${id}"，技术路线取向：${flavor}。
 只输出 {"solution": {...}} 一个对象。`,
       messages: [{ role: "user", content: userCtx }],
-      maxTokens: 8192,
+      maxTokens: 10240,
       temperature: 0.5,
     }).then((r) => r.solution).catch(() => null);
   }
 
-  // 并行生成两套（互不依赖），任一失败不影响另一套
-  const [solA, solB] = await Promise.all([
-    genOne("SOL-A", "稳妥优先：成熟模块、实现风险低、调试链路短"),
-    genOne("SOL-B", "性能优先：更强算力或更高精度路径，与 A 在主控/算法上有实质差异"),
-  ]);
-  const out: any = { rationale: "", recommended_solution: "SOL-A" };
-  const rawSols = [solA, solB].filter((x): x is SolutionProposal => !!x);
+  // 默认只生成 1 套方案：用户要的是一套能用的方案，不是做选择题。
+  // 想要备选时由前端传 variant（"稳妥"/"性能"）单独再生成一套，追加进列表。
+  const variant: string | undefined = input.variant;
+  const existing: SolutionProposal[] = input.existing_solutions || [];
+  const FLAVORS: Record<string, string> = {
+    balanced: "综合最优：在可实现性与性能之间取平衡，优先成熟模块与短调试链路",
+    safe: "稳妥优先：成熟模块、实现风险低、调试链路短，确保四天三夜能完成",
+    performance: "性能优先：更强算力或更高精度路径，允许更高实现难度",
+  };
+  const nextId = `SOL-${String.fromCharCode(65 + existing.length)}`;   // SOL-A / SOL-B / SOL-C…
+  const flavor = FLAVORS[variant || "balanced"] || FLAVORS.balanced;
+  const avoid = existing.length
+    ? `\n已有方案（本次必须给出实质不同的技术路线，不要重复）：${existing.map((e: any) => `${e.solution_id}=${e.name}`).join("；")}`
+    : "";
+
+  const one = await genOne(nextId, flavor + avoid);
+  const rawSols = [one].filter((x): x is SolutionProposal => !!x);
 
   // 结构校验：残缺方案不得当成功返回
   if (!rawSols.length) {
-    return { ok: false, output: null, message: "两套方案均生成失败。可能是需求过多导致输出超限 —— 建议精简需求清单后重试，或检查 LLM API 配额。" };
+    return { ok: false, output: null, message: "方案生成失败。可能是需求条目过多导致输出超限 —— 建议精简或合并需求后重试，或检查 LLM API 配额。" };
   }
   const usable = rawSols.filter(
     (sl: any) => sl?.solution_id && sl?.name && Array.isArray(sl.blocks) && sl.blocks.length
@@ -63,23 +73,21 @@ ${catalog || "（模块库为空，允许方案使用通用模块名，module_id
   if (!usable.length) {
     return { ok: false, output: null, message: "模型输出被截断，方案缺少功能块。建议减少已选用模块数量后重试。" };
   }
-  const truncation_note = usable.length < 2
-    ? `仅生成出 ${usable.length} 套完整方案（另一套输出残缺已丢弃）。可点「生成候选方案」重试补齐。`
-    : undefined;
+  const truncation_note = undefined;
 
-  // 生成后立即做规则预检（需求覆盖 + 接口兼容），结果附在每套方案上
-  const solutions = usable.map((sol: SolutionProposal) => {
-    const integration = checkIntegration(sol, index);
-    return { ...sol, integration_precheck: integration };
-  });
+  // 生成后立即做规则预检（需求覆盖 + 接口兼容）
+  const fresh = usable.map((sol: SolutionProposal) => ({
+    ...sol,
+    integration_precheck: checkIntegration(sol, index),
+  }));
+  const solutions = [...existing, ...fresh];
 
   return {
     ok: true,
     artifact_type: "solution_proposal",
-    // solutions 为前端契约字段；candidate_solutions 保留以兼容历史产物
-    output: { ...out, solutions, candidate_solutions: solutions, truncation_note },
+    output: { solutions, candidate_solutions: solutions, recommended_solution: solutions[0]?.solution_id, truncation_note },
     human_review_required: true, // 候选方案必须人工确认才能变成最终方案
-    message: `生成 ${solutions.length} 套候选方案，请人工确认后进入 BOM/代码阶段${truncation_note ? "（" + truncation_note + "）" : ""}`,
+    message: existing.length ? `已追加备选方案 ${nextId}，可与现有方案对比` : "方案已生成，请核对后确认为主方案",
   };
 });
 

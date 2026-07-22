@@ -96,7 +96,7 @@ export function SolutionPage({ ctx }: { ctx: any }) {
   useEffect(() => { logRef.current?.scrollTo({ top: 1e9 }); }, [ctx.msgs.length]);
 
   const step = ctx.chosenSolution ? 3 : ctx.solutions ? 2 : ctx.requirements ? 1 : 0;
-  const steps = ["① 需求输入", "② 方案生成", "③ 方案评估", "④ 确认进入 BOM"];
+  const steps = ["① 需求输入", "② 方案生成", "③ 方案核对", "④ 确认进入 BOM"];
 
   return (
     <>
@@ -119,7 +119,13 @@ export function SolutionPage({ ctx }: { ctx: any }) {
           </div>
           <div className="quickrow">
             {ctx.requirements && !ctx.solutions && (
-              <button className="btn sm" disabled={ctx.busy} onClick={ctx.runSolution}>生成候选方案</button>
+              <button className="btn sm" disabled={ctx.busy} onClick={() => ctx.runSolution()}>生成方案</button>
+            )}
+            {ctx.solutions && (
+              <>
+                <button className="btn ghost sm" disabled={ctx.busy} onClick={() => ctx.runSolution("safe")}>＋ 备选（稳妥）</button>
+                <button className="btn ghost sm" disabled={ctx.busy} onClick={() => ctx.runSolution("performance")}>＋ 备选（性能）</button>
+              </>
             )}
             {ctx.requirements && (
               <button className="btn ghost sm" disabled={ctx.busy} onClick={() => ctx.runInterpret(ctx.problemText)}>重新解析赛题</button>
@@ -181,8 +187,9 @@ export function SolutionPage({ ctx }: { ctx: any }) {
             <div className="card">
               <h3>怎么开始？</h3>
               <p className="hint">1️⃣ 把赛题原文整段粘贴到左侧对话框发送 —— 助手会先解析成可核对的指标清单，并标出题面歧义等待你确认。<br />
-                2️⃣ 确认后点「生成候选方案」，得到两套取舍不同的方案（含框图与接口预检）。<br />
-                3️⃣ 人工选定一套后，即可继续 BOM、连线检查、代码与报告。<br /><br />
+                2️⃣ 确认后点「生成方案」，得到一套完整方案（含框图与接口预检）。<br />
+                3️⃣ 核对后点「采用为主方案」，即可继续 BOM、连线检查、代码与报告。<br />
+                　　需要写报告的「方案论证」章节时，可再生成稳妥/性能取向的备选方案做对比。<br /><br />
                 💡 想让方案优先使用某些手头模块？先去「模块选型」页点「选用」。</p>
             </div>
           )}
@@ -605,7 +612,7 @@ function BlockList({ sol, ctx }: { sol: any; ctx: any }) {
   const otherSol = (ctx.solutions?.solutions || ctx.solutions?.candidate_solutions || []).find((x: any) => x.solution_id !== sol.solution_id);
 
   const candidates = replacing ? [
-    // 另一套方案中同角色的模块置顶（支持"从两套方案合并"）
+    // 其他方案中同角色的模块置顶（支持从备选方案合并取用）
     ...(otherSol?.blocks || [])
       .filter((b: any) => b.role === replacing.role && b.module_id && b.module_id !== replacing.module_id)
       .map((b: any) => ({ ...(ctx.modules.find((m: any) => m.id === b.module_id) || { id: b.module_id, name: b.name }), _from: otherSol.solution_id })),
@@ -651,7 +658,7 @@ function BlockList({ sol, ctx }: { sol: any; ctx: any }) {
         <div className="modal-mask" onClick={() => setReplacing(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>替换「{replacing.name}」</h3>
-            <p className="hint">选择替换模块后自动重跑接口规则检查。来自另一套方案的同角色模块排在最前（支持两套方案合并取用）。</p>
+            <p className="hint">选择替换模块后自动重跑接口规则检查。来自其他备选方案的同角色模块排在最前，方便合并取用。</p>
             <input placeholder="搜索模块 / 芯片…" value={q} onChange={(e) => setQ(e.target.value)}
               style={{ width: "100%", padding: 8, border: "1px solid var(--line)", borderRadius: 8, margin: "8px 0" }} />
             {candidates.map((m: any) => (

@@ -49,7 +49,7 @@ export default function Platform({ embed }: { embed: boolean }) {
   const [stage, setStage] = useState<string>("PREPARATION");
   const [busy, setBusy] = useState(false);
   const [msgs, setMsgs] = useState<Msg[]>([
-    { who: "agent", text: "你好，我是电赛设计助手。把赛题原文粘贴给我，或点击下方典型方向快速开始 —— 我会先帮你把题目拆成可核对的指标清单，确认后再生成两套候选方案。" },
+    { who: "agent", text: "你好，我是电赛设计助手。把赛题原文粘贴给我，或点击下方典型方向快速开始 —— 我会先帮你把题目拆成可核对的指标清单，确认后再生成方案。" },
   ]);
 
   // 项目内产物（跨页共享）
@@ -184,7 +184,7 @@ export default function Platform({ embed }: { embed: boolean }) {
       const amb = r.output?.ambiguities?.length || 0;
       say("agent", `已把题目拆成 ${r.output?.requirements?.length ?? 0} 条可核对指标（见右侧）。` +
         (amb ? `其中 ${amb} 处题面有歧义，我按常规理解做了标注，请核对。` : "") +
-        `\n确认无误后点「生成候选方案」，我会给出两套不同取舍的方案。`);
+        `\n确认无误后点「生成方案」，我会给出一套完整方案（含框图与接口预检）；需要对比论证时可再生成备选。`);
       await advanceStage("REQUIREMENTS_PARSED", pid || undefined);
       emitToEzplm("requirements_ready", r.output);
     } else say("agent", "解析失败：" + (r.message || ""));
@@ -314,22 +314,30 @@ export default function Platform({ embed }: { embed: boolean }) {
     return r;
   }
 
-  async function runSolution() {
+  async function runSolution(variant?: "safe" | "performance") {
     if (!requirements) { say("agent", "请先把赛题发给我完成需求解析。"); return; }
     setBusy(true);
-    say("user", "生成候选方案");
-    say("agent", "正在设计两套候选方案（各自独立生成，含框图与接口预检），通常需要 1~2 分钟，请稍候……");
+    const existing = (solutions?.solutions || solutions?.candidate_solutions || []) as any[];
+    const isAlt = !!variant && existing.length > 0;
+    say("user", isAlt ? `生成备选方案（${variant === "safe" ? "稳妥优先" : "性能优先"}）` : "生成方案");
+    say("agent", isAlt
+      ? "正在生成一套技术路线不同的备选方案，用于对比论证……"
+      : "正在设计方案（含框图与接口预检），通常需要 30~60 秒，请稍候……");
     const r = await callAgent("solution_architect", {
       requirements,
       preferred_modules: shortlist.length ? shortlist : undefined,
+      variant,
+      existing_solutions: isAlt ? existing : undefined,
     }, projectId);
     setBusy(false);
     if (r.ok) {
       setSolutions(r.output);
-      const n = (r.output?.solutions || r.output?.candidate_solutions)?.length ?? 0;
-      say("agent", `已生成 ${n} 套候选方案（含框图与接口预检，见右侧）。两套方案的取舍不同，请对比后人工确认一套 —— 这是硬性流程，方案不确认无法进入 BOM 和代码。`);
+      const list = r.output?.solutions || r.output?.candidate_solutions || [];
+      say("agent", isAlt
+        ? `已追加备选方案（现有 ${list.length} 套），可对比后选定主方案。`
+        : "方案已生成（含框图与接口预检）。请核对后点「采用为主方案」；如需对比论证，可再生成一套备选。");
       if (projectId) await advanceStage("SOLUTION_CANDIDATES");
-    } else say("agent", "生成失败：" + (r.message || "") + "\n\n说明：方案生成会参考模块库中最相关的若干模块（按认证等级排序），并非只用你选用的那几个。\n可尝试：① 直接重试（两套方案独立生成，重试常能补齐）；② 精简或合并需求条目；③ 若反复失败，检查 Vercel 日志中 LLM 调用报错。");
+    } else say("agent", "生成失败：" + (r.message || "") + "\n\n说明：方案生成会参考模块库中最相关的若干模块（按认证等级排序），并非只用你选用的那几个。\n可尝试：① 直接重试；② 精简或合并需求条目；③ 若反复失败，检查 Vercel 日志中 LLM 调用报错。");
   }
 
   async function approveSolution(sol: any) {
