@@ -13,7 +13,15 @@ export function getEmbedParams() {
   };
 }
 
-type AgentResult = { ok: boolean; output: any; message?: string; human_review_required?: boolean };
+type AgentResult = {
+  ok: boolean; output: any; message?: string; human_review_required?: boolean;
+  agent?: string; queue?: { position: number; ahead: number; estimated_wait_seconds: number } | null;
+  degraded?: { mode: string; reason: string } | null;
+  provider?: string; cached?: boolean; fallback_used?: boolean;
+};
+
+/** 任务进度回调：用于显示排队位置与预计等待 */
+export type ProgressFn = (p: { status: string; queue?: any; elapsed: number }) => void;
 
 // 慢 Agent（LLM 重活）走异步 run_id + 轮询，避免长请求被掐断与重复扣费；
 // 快 Agent（纯规则/短调用）仍走同步端点。
@@ -25,7 +33,7 @@ async function safeJson(res: Response): Promise<any> {
 
 /** 永不抛异常：任何网络/解析失败都返回 { ok:false, message }，
  *  否则异常会跳过调用方的 setBusy(false)，界面卡在"思考中"。 */
-export async function callAgent(agent: string, input: any, projectId: string | null): Promise<AgentResult> {
+export async function callAgent(agent: string, input: any, projectId: string | null, onProgress?: ProgressFn): Promise<AgentResult> {
   try {
     const body = JSON.stringify({ agent, input, project_id: projectId });
     const headers = { "content-type": "application/json" };
@@ -34,8 +42,12 @@ export async function callAgent(agent: string, input: any, projectId: string | n
       const idem = `${agent}:${projectId || "np"}:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
       const res = await fetch("/api/agent-tasks", { method: "POST", headers, body: JSON.stringify({ agent, input, project_id: projectId, idempotency_key: idem }) });
       const start = await safeJson(res);
+      // 系统降级：明确告知用户仍可使用的能力，而不是失败弹窗
+      if (res.status === 503 && start.degraded) {
+        return { ok: false, output: null, message: start.error, degraded: { mode: start.system_mode, reason: start.error } };
+      }
       if (!res.ok || !start.task_id) return { ok: false, output: null, message: start.error || `启动失败 HTTP ${res.status}` };
-      return pollTask(start.task_id, true);
+      return pollTask(start.task_id, true, onProgress);
     }
 
     const res = await fetch("/api/agent", { method: "POST", headers, body });
@@ -55,7 +67,7 @@ export async function cancelActiveTask() {
 }
 
 /** 轮询任务直到终态。ignite=true 时先点火；页面刷新恢复时 ignite=false（可能已在跑）。 */
-export async function pollTask(taskId: string, ignite: boolean): Promise<AgentResult & { agent?: string }> {
+export async function pollTask(taskId: string, ignite: boolean, onProgress?: ProgressFn): Promise<AgentResult & { agent?: string }> {
   _activeTask = taskId;
   let direct: AgentResult | null = null;
   // 点火请求本身会同步跑完并回传结果 —— 拿到就用（轮询仅作为刷新恢复/丢包时的后备）
@@ -77,7 +89,10 @@ export async function pollTask(taskId: string, ignite: boolean): Promise<AgentRe
       if (direct) return direct;
       const st = await fetch(`/api/agent-tasks/${taskId}`).then(safeJson).catch(() => null);
       if (!st || st.error && !st.status) continue;
-      if (st.status === "ok") return { ...(st.result as AgentResult), agent: st.agent };
+      onProgress?.({ status: st.status, queue: st.queue, elapsed: Date.now() - t0 });
+      if (st.status === "ok") {
+        return { ...(st.result as AgentResult), agent: st.agent, provider: st.model, fallback_used: st.fallback_used };
+      }
       if (st.status === "canceled") return { ok: false, output: null, message: "任务已取消", agent: st.agent };
       if (st.status === "error") return (st.result && { ...(st.result as AgentResult), agent: st.agent }) || { ok: false, output: null, message: st.error || "运行失败", agent: st.agent };
       if (st.status === "queued" && !reIgnited && Date.now() - t0 > 12_000) { reIgnited = true; fire(); }

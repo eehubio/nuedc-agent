@@ -71,6 +71,8 @@ export default function Platform({ embed }: { embed: boolean }) {
   const [testRecords, setTestRecords] = useState<any[]>([]);
   const [testResult, setTestResult] = useState<any>(null);           // verdicts + summary
   const [staleTypes, setStaleTypes] = useState<string[]>([]);        // 方案变更后过期的产物类型
+  const [sysMode, setSysMode] = useState<any>(null);                 // 系统模式与排队情况
+  const [progress, setProgress] = useState<any>(null);               // 当前任务排队位置
   const [shortlist, setShortlist] = useState<string[]>([]); // 模块选型页「选用」的备选模块
 
   const say = useCallback((who: Msg["who"], text: string) => {
@@ -78,6 +80,14 @@ export default function Platform({ embed }: { embed: boolean }) {
   }, []);
 
   // ---- 初始加载：项目列表 + 模块库 ----
+  // 系统模式轮询（降级时页面给出明确提示，不白屏）
+  useEffect(() => {
+    const load = () => api("/api/admin/system-mode").then((d) => { if (!d.error) setSysMode(d); }).catch(() => {});
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, []);
+
   useEffect(() => {
     reloadProjects();
     api(`/api/modules?tier=${params.tier}`).then((d) => setModules(d.modules || [])).catch(() => {});
@@ -373,8 +383,8 @@ export default function Platform({ embed }: { embed: boolean }) {
       preferred_modules: shortlist.length ? shortlist : undefined,
       variant,
       existing_solutions: isAlt ? existing : undefined,
-    }, projectId);
-    setBusy(false);
+    }, projectId, (p) => setProgress(p));
+    setBusy(false); setProgress(null);
     if (r.ok) {
       setSolutions(r.output);
       const list = r.output?.solutions || r.output?.candidate_solutions || [];
@@ -382,6 +392,8 @@ export default function Platform({ embed }: { embed: boolean }) {
         ? `已追加备选方案（现有 ${list.length} 套），可对比后选定主方案。`
         : "方案已生成（含框图与接口预检）。请核对后点「采用为主方案」；如需对比论证，可再生成一套备选。");
       if (projectId) await advanceStage("SOLUTION_CANDIDATES");
+    } else if ((r as any).degraded) {
+      say("agent", (r as any).degraded.reason);
     } else say("agent", "生成失败：" + (r.message || "") + "\n\n🔍 诊断建议：打开 /api/diag?full=1 可直接查看 LLM 链路状态（Key、连通性、JSON 生成能力），会明确指出坏在哪一环。");
   }
 
@@ -494,7 +506,7 @@ export default function Platform({ embed }: { embed: boolean }) {
     params, busy, stage, stageIdx, projectId, projects, setProjectId, resetProject, reloadProjects,
     problemText, setProblemText, requirements, solutions, chosenSolution,
     wiringReport, bom, codeBundle, debugSession, report, modules, shortlist, setShortlist,
-    backupSolution, testPlan, testRecords, testResult, staleTypes,
+    backupSolution, testPlan, testRecords, testResult, staleTypes, sysMode, progress,
     msgs, chat, runInterpret, runSolution, approveSolution, runWiringCheck,
     runBomFromSolution, runBomFromText, runCode, runDebug, runReport, startFromDirection,
     updateRequirement, setReqStatus, confirmAllExtracted, addRequirement,
@@ -531,7 +543,17 @@ export default function Platform({ embed }: { embed: boolean }) {
       <div className="workarea">
         <header className="topbar">
           <h1>{PAGE_TITLE[page]}</h1>
-          <span className="crumb">{busy ? <><span className="spinner" /> 智能体运行中… <button className="btn ghost sm" onClick={() => cancelActiveTask()}>取消</button></> : ""}</span>
+          <span className="crumb">
+            {busy && (
+              <>
+                <span className="spinner" />
+                {progress?.queue?.ahead > 0
+                  ? ` 排队中（前面 ${progress.queue.ahead} 个任务，预计 ${Math.max(1, Math.round(progress.queue.estimated_wait_seconds / 60))} 分钟）`
+                  : " 智能体运行中…"}
+                <button className="btn ghost sm" onClick={() => cancelActiveTask()}>取消</button>
+              </>
+            )}
+          </span>
           <select value={projectId || ""} onChange={(e) => setProjectId(e.target.value || null)} aria-label="选择项目">
             <option value="">— 选择项目 —</option>
             {projects.map((p) => <option key={p.project_id} value={p.project_id}>{p.name}</option>)}

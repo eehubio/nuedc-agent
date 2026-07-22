@@ -17,10 +17,39 @@ export interface LlmOptions {
   messages: LlmMessage[];
   maxTokens?: number;
   json?: boolean;   // 请求提供方以 JSON 模式输出（Gemini/OpenAI 支持）
+  // 以下字段供网关做策略路由、缓存与可追踪记账
+  taskType?: string;
+  owner?: string | null;
+  projectId?: string | null;
+  taskId?: string | null;
+  allowCache?: boolean;
   temperature?: number;
 }
 
+/** 迁移兼容层：旧调用点继续可用，内部统一走 modelGateway。
+ *  新代码请直接使用 modelGateway.run()，以获得 taskType 级策略、缓存与遥测。 */
 export async function llmComplete(opts: LlmOptions): Promise<string> {
+  if (process.env.GATEWAY_ENABLED !== "0") {
+    const { modelGateway } = await import("./model-gateway");
+    const r = await modelGateway.run({
+      taskType: (opts.taskType as any) || "GENERAL_QA",
+      system: opts.system,
+      messages: opts.messages as any,
+      json: !!opts.json,
+      maxOutputTokens: opts.maxTokens,
+      owner: opts.owner ?? null,
+      projectId: opts.projectId ?? null,
+      taskId: opts.taskId ?? null,
+      allowCache: opts.allowCache,
+    });
+    if (!r.ok) throw new Error(r.message || "模型调用失败");
+    return r.rawText;
+  }
+  return llmCompleteDirect(opts);
+}
+
+/** 直连实现（GATEWAY_ENABLED=0 时的回滚路径） */
+async function llmCompleteDirect(opts: LlmOptions): Promise<string> {
   const provider = process.env.LLM_PROVIDER || "anthropic";
   if (provider === "anthropic") return anthropicComplete(opts);
   if (provider === "gemini") return geminiComplete(opts);
@@ -89,7 +118,20 @@ export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
   const system = opts.system +
     "\n\n输出要求：只输出一个合法 JSON 对象，不要输出 Markdown 代码围栏、前言或解释文字。" +
     "\n务必控制篇幅：描述性字段简明扼要（每条不超过 60 字），确保 JSON 在 token 限额内完整闭合。";
-  const raw = await llmComplete({ ...opts, system, json: true });
+  // 自动附加当前 Agent 上下文与 taskType（可追踪 + 策略路由）
+  let auto: Partial<LlmOptions> = {};
+  try {
+    const { currentAgentContext } = await import("./agents/base");
+    const { AGENT_TASK_TYPE } = await import("./model-gateway/task-policy");
+    const c = currentAgentContext();
+    auto = {
+      owner: opts.owner ?? c.owner,
+      projectId: opts.projectId ?? c.projectId,
+      taskId: opts.taskId ?? c.taskId,
+      taskType: opts.taskType ?? (c.agent ? AGENT_TASK_TYPE[c.agent] : undefined),
+    };
+  } catch { /* 非 Agent 环境调用（如自检）时忽略 */ }
+  const raw = await llmComplete({ ...opts, ...auto, system, json: true });
   const cleaned = raw.replace(/```json|```/g, "").trim();
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");

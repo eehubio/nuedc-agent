@@ -33,8 +33,7 @@ export async function POST(req: NextRequest) {
   const { reservation, error: quotaErr } = await reserveQuota(id.owner, "pdf_extract", id.tier);
   if (!reservation) return withIdentityCookie(NextResponse.json({ error: quotaErr }, { status: 429 }), id);
 
-  const provider = process.env.LLM_PROVIDER || "anthropic";
-  const prompt = `这是全国大学生电子设计竞赛的赛题 PDF。请完整提取文字内容，要求：
+  const extractPrompt = `这是全国大学生电子设计竞赛的赛题 PDF。请完整提取文字内容，要求：
 1. 保持原有条目结构（任务、基本要求、发挥部分、说明、评分标准表）
 2. 每页正文前加一行页码标记，格式：【第N页】
 3. 评分标准表逐行转成"项目｜分值"的文字形式，不要遗漏分值
@@ -42,49 +41,43 @@ export async function POST(req: NextRequest) {
 5. 只输出提取的正文，不要添加任何解释或总结`;
 
   try {
-    let text = "";
-    if (provider === "gemini") {
-      const model = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`, {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [
-            { inline_data: { mime_type: "application/pdf", data: body.data_base64 } },
-            { text: prompt },
-          ]}],
-          generationConfig: { maxOutputTokens: 8192, temperature: 0, thinkingConfig: /2\.5/.test(model) ? { thinkingBudget: 0 } : undefined },
-        }),
-      });
-      if (!res.ok) throw new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 300)}`);
-      const d = await res.json();
-      text = d.candidates?.[0]?.content?.parts?.map((p: any) => p.text).filter(Boolean).join("\n") || "";
-      if (!text) throw new Error(`未提取到文字（finishReason=${d.candidates?.[0]?.finishReason}）`);
-    } else if (provider === "anthropic") {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY || "", "anthropic-version": "2023-06-01" },
-        body: JSON.stringify({
-          model: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6",
-          max_tokens: 8192,
-          messages: [{ role: "user", content: [
-            { type: "document", source: { type: "base64", media_type: "application/pdf", data: body.data_base64 } },
-            { type: "text", text: prompt },
-          ]}],
-        }),
-      });
-      if (!res.ok) throw new Error(`Anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
-      const d = await res.json();
-      text = (d.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
-    } else {
-      return NextResponse.json({ error: "当前 LLM 提供商不支持 PDF 解析，请直接粘贴题面文本" }, { status: 400 });
+    // 统一走模型网关：自动选多模态 Provider、容灾切换、缓存（同一 PDF 只解析一次）、计费追踪
+    const { modelGateway } = await import("@/lib/model-gateway");
+    const { createHash } = await import("node:crypto");
+    const pdfHash = createHash("sha256").update(body.data_base64.slice(0, 200_000)).digest("hex").slice(0, 32);
+
+    const r = await modelGateway.run<string>({
+      taskType: "PDF_EXTRACT",
+      system: extractPrompt,
+      messages: [{ role: "user", content: "请提取该 PDF 的完整正文" }],
+      pdfBase64: body.data_base64,
+      json: false,
+      owner: id.owner,
+      allowCache: true,
+      problemVersion: pdfHash,     // 同一份 PDF 命中全局缓存，不重复解析
+    });
+
+    if (!r.ok) {
+      await refundQuota(id.owner, "pdf_extract", reservation.ref);
+      return NextResponse.json({
+        error: r.message || "PDF 解析失败。本次不计入配额。",
+        degraded: r.degraded || null,
+      }, { status: r.errorCode === "SYSTEM_MODE" || r.errorCode === "NO_PROVIDER" ? 503 : 500 });
     }
-    await commitQuota(reservation.ref);   // 成功才正式扣减
+
+    const text = String(r.rawText || "").trim();
+    if (!text) {
+      await refundQuota(id.owner, "pdf_extract", reservation.ref);
+      return NextResponse.json({ error: "未从 PDF 提取到文字（可能是纯图片扫描件且 OCR 失败）。本次不计入配额。" }, { status: 500 });
+    }
+
+    await commitQuota(reservation.ref);
     return withIdentityCookie(NextResponse.json({
-      text: text.trim(), chars: text.trim().length,
+      text, chars: text.length,
+      provider: r.provider, cached: r.cacheHit,
       quota: reservation.quota === -1 ? null : { used: reservation.used, limit: reservation.quota },
     }), id);
   } catch (e: any) {
-    // 提取失败不该扣用户次数（诊断 P0-3）
     await refundQuota(id.owner, "pdf_extract", reservation.ref);
     return NextResponse.json({ error: `PDF 解析失败：${e?.message || e}。本次不计入配额，可重试或改用「粘贴文本」。` }, { status: 500 });
   }

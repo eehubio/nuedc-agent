@@ -202,6 +202,79 @@ ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'success';
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS ref TEXT;
 `,
   },
+  {
+    id: 11,
+    name: "model_gateway_telemetry_and_scheduling",
+    sql: `
+CREATE TABLE IF NOT EXISTS llm_usage_events (
+  id BIGSERIAL PRIMARY KEY,
+  owner TEXT,
+  project_id TEXT,
+  task_id TEXT,
+  task_type TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT,
+  input_tokens INTEGER DEFAULT 0,
+  output_tokens INTEGER DEFAULT 0,
+  cached_tokens INTEGER DEFAULT 0,
+  estimated_cost NUMERIC(12,6) DEFAULT 0,
+  latency_ms INTEGER DEFAULT 0,
+  status TEXT NOT NULL,
+  error_code TEXT,
+  fallback_used INTEGER DEFAULT 0,
+  cache_hit INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_events_owner_day ON llm_usage_events(owner, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_provider ON llm_usage_events(provider, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_project ON llm_usage_events(project_id, created_at);
+
+CREATE TABLE IF NOT EXISTS provider_health (
+  provider TEXT PRIMARY KEY,
+  status TEXT DEFAULT 'healthy',
+  consecutive_429 INTEGER DEFAULT 0,
+  disabled_until TIMESTAMPTZ,
+  last_error TEXT,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS model_cache (
+  cache_key TEXT PRIMARY KEY,
+  task_type TEXT NOT NULL,
+  scope TEXT DEFAULT 'project',
+  output TEXT NOT NULL,
+  provider TEXT,
+  model TEXT,
+  hit_count INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  expires_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_cache_expiry ON model_cache(expires_at);
+
+CREATE TABLE IF NOT EXISTS system_config (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS task_type TEXT;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS owner_ref TEXT;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS queue_name TEXT DEFAULT 'default';
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS provider_hint TEXT;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS input_hash TEXT;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS timeout_at TIMESTAMPTZ;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS fallback_count INTEGER DEFAULT 0;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS token_input INTEGER DEFAULT 0;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS token_output INTEGER DEFAULT 0;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS estimated_cost NUMERIC(12,6) DEFAULT 0;
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS error_code TEXT;
+CREATE INDEX IF NOT EXISTS idx_tasks_queue ON agent_tasks(status, priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_hash ON agent_tasks(input_hash) WHERE input_hash IS NOT NULL;
+`,
+  },
 ];
 
 let applied = false;

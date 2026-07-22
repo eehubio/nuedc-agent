@@ -3,6 +3,8 @@ import type { AgentType, ProjectStage } from "../types";
 import { STAGE_ALLOWED_AGENTS } from "../types";
 
 export interface AgentContext {
+  owner?: string | null;
+  taskId?: string | null;
   projectId: string | null;
   stage: ProjectStage;
   tier: string;
@@ -24,6 +26,12 @@ export function registerAgent(type: AgentType, fn: AgentFn) {
   registry.set(type, fn);
 }
 
+/** 当前 Agent 运行上下文（供 llmJson 记账到用户/项目/任务）。
+ *  Node 单请求内串行执行，用模块级变量即可；跨请求不共享。 */
+let _ctx: { owner?: string | null; projectId?: string | null; taskId?: string | null; agent?: string } = {};
+export function currentAgentContext() { return _ctx; }
+export function setAgentContext(c: typeof _ctx) { _ctx = c; }
+
 export async function runAgent(
   type: AgentType,
   input: any,
@@ -32,6 +40,7 @@ export async function runAgent(
   await ensureSchema();
   const runId = uid("RUN");
   const t0 = Date.now();
+  setAgentContext({ owner: (ctx as any).owner ?? null, projectId: ctx.projectId, taskId: (ctx as any).taskId ?? null, agent: type });
 
   // 状态门禁：项目状态机决定允许调用哪些 Agent
   const allowed = STAGE_ALLOWED_AGENTS[ctx.stage] || [];

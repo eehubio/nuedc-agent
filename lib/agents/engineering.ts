@@ -1,6 +1,7 @@
 // 工程类 Agent：方案架构、接口集成检查、BOM 整理、备料规划
 import { llmJson, lastRepairApplied } from "../llm";
 import { registerAgent, loadModuleIndex, moduleCatalogForLlm } from "./base";
+import { buildContext, preFilterModules } from "../model-gateway/context-builder";
 import { solutionSchema, connectionSchema, powerRailSchema, parseArrayLoose, bomItemSchema } from "../agent-schemas";
 import { checkIntegration } from "../rules/integration-rules";
 import { applyQuantityRules, flagForReview } from "../rules/procurement-rules";
@@ -10,7 +11,6 @@ import type { SolutionProposal, BomItem } from "../types";
 // 生成两套候选方案；生成后立刻用规则引擎做接口预检，把结果附在方案上
 registerAgent("solution_architect", async (input) => {
   const index = await loadModuleIndex();
-  const catalog = moduleCatalogForLlm(index, { preferred: input.preferred_modules || [], limit: 40 });
   const requirements = input.requirements;
   if (!requirements) return { ok: false, output: null, message: "缺少 requirements（先运行赛题理解 Agent）" };
   // 需求确认门禁：所有必须项需人工确认（REJECTED 视为删除）；input.force=true 可越过（原型探索用）
@@ -21,6 +21,18 @@ registerAgent("solution_architect", async (input) => {
   }
   // 不修改调用方传入的对象（旧问题 3）：用副本，避免前端状态被意外改写
   const requirementsForGen = { ...requirements, requirements: reqList.filter((r) => r.status !== "REJECTED") };
+
+  // 模块预筛选：程序侧按证据等级/关键词/接口/电压粗排，只把 top 20 送进模型
+  const candidateModules = preFilterModules(Object.values(index), {
+    requirements: requirementsForGen.requirements,
+    preferred: input.preferred_modules || [],
+    limit: 20,
+  });
+  const catalog = moduleCatalogForLlm(
+    Object.fromEntries(candidateModules.map((m: any) => [m.id, m])),
+    { preferred: input.preferred_modules || [], limit: 20 },
+  );
+
 
   // ---- 分次生成：两套方案各一次调用，单次输出量减半，从根本上避免截断 ----
   // （一次性生成两套方案 + 框图 + 连线 + 电源树，即使 12k token 也常被截断）
@@ -35,32 +47,18 @@ registerAgent("solution_architect", async (input) => {
 模块目录：
 ${catalog || "（模块库为空，允许方案使用通用模块名，module_id 留空）"}`;
 
-  // 需求裁剪（P0-5）：不按字符硬切（会静默丢掉后半段），改为按优先级逐条纳入并明确报告省略项
-  function buildRequirementContext(reqs: any[], budget = 6000) {
-    const rank = (r: any) => (r.priority === "mandatory" ? 0 : 1);
-    const ordered = [...reqs].sort((a, b) => rank(a) - rank(b));
-    const compact = (r: any) => ({
-      id: r.id, description: String(r.description || "").slice(0, 120),
-      target: r.target ?? undefined, unit: r.unit ?? undefined, tolerance: r.tolerance ?? undefined,
-      priority: r.priority,
-    });
-    const kept: any[] = [];
-    const omitted: string[] = [];
-    let size = 2;
-    for (const r of ordered) {
-      const piece = JSON.stringify(compact(r));
-      if (size + piece.length + 1 <= budget) { kept.push(compact(r)); size += piece.length + 1; }
-      else omitted.push(r.id);
-    }
-    return { kept, omitted };
-  }
+  // 上下文组装：按优先级纳入需求与模块，并产出 manifest 供 UI 提示省略项
+  const built = buildContext({
+    requirements: requirementsForGen.requirements,
+    modules: candidateModules,
+    constraints: input.constraints,
+    budgetTokens: 3000,
+    maxModules: 20,
+  });
   const reqAll = (requirementsForGen.requirements || []) as any[];
-  const { kept: reqKept, omitted: reqOmitted } = buildRequirementContext(reqAll);
-  const userCtx = `结构化需求（共 ${reqAll.length} 条${reqOmitted.length ? `，因长度限制本次仅纳入 ${reqKept.length} 条` : ""}）：
-${JSON.stringify(reqKept)}
-${reqOmitted.length ? `注意：以下需求未纳入本次上下文，请在 uncovered_requirements 中原样列出它们：${reqOmitted.join("、")}` : ""}
-补充约束：${input.constraints || "无"}
-用户已选用的优先模块：${JSON.stringify(input.preferred_modules || [])}`;
+  const reqOmitted = built.manifest.omittedRequirementIds;
+  const contextManifest = built.manifest;
+  const userCtx = built.text + (input.preferred_modules?.length ? `\n用户优先模块：${JSON.stringify(input.preferred_modules)}` : "");
 
   // 容错解析：模型可能返回 {solution:{...}}、直接 {...}、或把 blocks 叫别的名字
   function normalizeSolution(raw: any, id: string): SolutionProposal | null {
@@ -182,7 +180,7 @@ ${reqOmitted.length ? `注意：以下需求未纳入本次上下文，请在 un
   return {
     ok: true,
     artifact_type: "solution_proposal",
-    output: { solutions, candidate_solutions: solutions, recommended_solution: solutions[0]?.solution_id, truncation_note, partial_output: partial, repair_applied: partial, dropped_connections: droppedConn, dropped_power_rails: droppedRail },
+    output: { solutions, candidate_solutions: solutions, recommended_solution: solutions[0]?.solution_id, truncation_note, partial_output: partial, repair_applied: partial, dropped_connections: droppedConn, dropped_power_rails: droppedRail, context_manifest: contextManifest },
     human_review_required: true, // 候选方案必须人工确认才能变成最终方案
     message: (existing.length ? `已追加备选方案 ${nextId}，可与现有方案对比` : "方案已生成，请核对后确认为主方案") + (partial ? "（⚠ 输出曾被截断修复，请重点核对完整性）" : ""),
   };

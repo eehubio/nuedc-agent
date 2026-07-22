@@ -10,7 +10,8 @@ export const runtime = "nodejs";
 /** 任务层（与 agent_runs 执行日志分离）：
  *  POST 建任务（幂等键去重）；GET ?project_id=&active=1 列活动任务（刷新恢复用）。 */
 export async function POST(req: NextRequest) {
-  const tier = (await getRequestIdentity(req)).tier;
+  const id = await getRequestIdentity(req);
+  const tier = id.tier;
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
 
@@ -41,13 +42,58 @@ export async function POST(req: NextRequest) {
     if (ex.rows.length) return NextResponse.json({ task_id: ex.rows[0].task_id, status: ex.rows[0].status, deduped: true }, { status: 200 });
   }
 
+  // taskType 与优先级来自策略表；inputHash 用于相同输入直接复用已有任务
+  const { AGENT_TASK_TYPE, policyFor } = await import("@/lib/model-gateway/task-policy");
+  const { modelGateway } = await import("@/lib/model-gateway");
+  const taskType = AGENT_TASK_TYPE[agent] || "GENERAL_QA";
+  const policy = policyFor(taskType as any);
+  const hash = modelGateway.inputHash(taskType, { input: body.input || {}, project: projectId });
+
+  // 相同 inputHash 的近期任务直接复用（防重复扣费）
+  const dup = await db().execute({
+    sql: `SELECT task_id, status FROM agent_tasks
+          WHERE input_hash=? AND created_at > now() - interval '10 minutes'
+            AND status IN ('queued','running','ok') ORDER BY created_at DESC LIMIT 1`,
+    args: [hash],
+  }).catch(() => ({ rows: [] as any[] }));
+  if (dup.rows.length) {
+    return NextResponse.json({ task_id: dup.rows[0].task_id, status: dup.rows[0].status, deduped: true, reason: "input_hash" }, { status: 200 });
+  }
+
+  // 每用户重型任务并发上限
+  const { getPeakConfig } = await import("@/lib/system-mode");
+  const peak = await getPeakConfig();
+  if (policy.concurrencyClass === "heavy") {
+    const running = await db().execute({
+      sql: `SELECT COUNT(*) n FROM agent_tasks WHERE owner_ref=? AND status IN ('queued','running')
+              AND task_type IN (SELECT unnest(?::text[]))`,
+      args: [id.owner, `{${Object.entries(AGENT_TASK_TYPE).filter(([, t]) => policyFor(t as any).concurrencyClass === "heavy").map(([, t]) => t).join(",")}}`],
+    }).catch(() => ({ rows: [{ n: 0 }] as any[] }));
+    if (Number(running.rows[0]?.n || 0) >= peak.maxPerUserConcurrency) {
+      return NextResponse.json({
+        error: `你已有 ${running.rows[0].n} 个生成任务在进行中，请等待完成后再提交（每人同时最多 ${peak.maxPerUserConcurrency} 个重型任务）。`,
+      }, { status: 429 });
+    }
+  }
+
+  // 系统模式门禁：降级/仅规则模式下明确拒绝并说明仍可用的能力
+  const { getSystemMode, allowsPriority } = await import("@/lib/system-mode");
+  const mode = await getSystemMode();
+  const gate = allowsPriority(mode, policy.priority);
+  if (!gate.allowed) {
+    return NextResponse.json({ error: gate.reason, system_mode: mode, degraded: true }, { status: 503 });
+  }
+
   const taskId = uid("TASK");
   const model = process.env.LLM_PROVIDER === "gemini" ? (process.env.GEMINI_MODEL || "gemini-2.0-flash")
     : process.env.LLM_PROVIDER === "openai" ? (process.env.OPENAI_MODEL || "gpt-4o-mini")
     : (process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6");
   await db().execute({
-    sql: "INSERT INTO agent_tasks (task_id, project_id, agent_type, status, input, tier, idempotency_key, model) VALUES (?,?,?,?,?,?,?,?)",
-    args: [taskId, projectId, agent, "queued", JSON.stringify(body.input || {}), tier, body.idempotency_key || null, model],
+    sql: `INSERT INTO agent_tasks (task_id, project_id, agent_type, status, input, tier, idempotency_key, model,
+            task_type, priority, input_hash, owner_ref, queue_name, scheduled_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, now())`,
+    args: [taskId, projectId, agent, "queued", JSON.stringify(body.input || {}), tier, body.idempotency_key || null, model,
+      taskType, policy.priority, hash, id.owner, policy.concurrencyClass],
   });
   return NextResponse.json({ task_id: taskId, status: "queued", model }, { status: 202 });
 }
