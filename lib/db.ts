@@ -109,10 +109,9 @@ CREATE TABLE IF NOT EXISTS events (
 `;
 
 export async function ensureSchema() {
-  const c = db();
-  for (const stmt of SCHEMA_SQL.split(";").map((s) => s.trim()).filter(Boolean)) {
-    await c.execute(stmt);
-  }
+  // 版本化迁移（lib/migrations.ts）；动态 import 避免循环依赖
+  const { ensureMigrations } = await import("./migrations");
+  await ensureMigrations();
 }
 
 export function uid(prefix: string): string {

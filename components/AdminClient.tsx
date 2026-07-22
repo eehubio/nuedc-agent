@@ -274,6 +274,24 @@ function Editor({ draft, setDraft, isNew, onSave, onCancel, onReview }: any) {
       </section>
 
       <section>
+        <h4>参数证据 <button className="btn ghost sm" onClick={() => set("evidence_records", [...(draft.evidence_records || []), { param: "", value: "", evidence_level: "E5", conditions: "", source_id: "" }])}>＋ 添加证据</button></h4>
+        <p className="hint">证据等级：E0 AI推断 / E1 商家描述 / E2 社区 / E3 芯片手册 / E4 模块厂文档 / E5 单实验室实测 / E6 多实验室复验。<b>晋级 BENCHMARKED / COMPETITION_READY 至少需要一条 E5+。</b></p>
+        {(draft.evidence_records || []).map((ev: any, i: number) => (
+          <div key={i} className="ef-grid" style={{ alignItems: "end", marginBottom: 6, gridTemplateColumns: "1.2fr 0.8fr 0.6fr 1.2fr 0.9fr auto" }}>
+            <F label="参数路径"><input value={ev.param} placeholder="power.peak_current_ma" onChange={(e) => { const a = [...draft.evidence_records]; a[i] = { ...ev, param: e.target.value }; set("evidence_records", a); }} /></F>
+            <F label="实测值"><input value={ev.value} onChange={(e) => { const a = [...draft.evidence_records]; a[i] = { ...ev, value: e.target.value }; set("evidence_records", a); }} /></F>
+            <F label="等级"><select value={ev.evidence_level} onChange={(e) => { const a = [...draft.evidence_records]; a[i] = { ...ev, evidence_level: e.target.value }; set("evidence_records", a); }}>
+              {["E0","E1","E2","E3","E4","E5","E6"].map((l) => <option key={l}>{l}</option>)}</select></F>
+            <F label="测试条件"><input value={ev.conditions || ""} placeholder="12V, 25°C, 无风扇" onChange={(e) => { const a = [...draft.evidence_records]; a[i] = { ...ev, conditions: e.target.value }; set("evidence_records", a); }} /></F>
+            <F label="来源编号"><input value={ev.source_id || ""} placeholder="TEST-2026-017" onChange={(e) => { const a = [...draft.evidence_records]; a[i] = { ...ev, source_id: e.target.value }; set("evidence_records", a); }} /></F>
+            <button className="btn ghost sm danger" onClick={() => set("evidence_records", draft.evidence_records.filter((_: any, j: number) => j !== i))}>删</button>
+          </div>
+        ))}
+      </section>
+
+      {!isNew && <RevisionSection moduleId={draft.id} />}
+
+      <section>
         <h4>资产与来源 <span className="hint" style={{ fontWeight: 400 }}>（付费门控在 API 层，此处只存 URL）</span></h4>
         <div className="ef-grid">
           <F label="来源类型">
@@ -369,5 +387,42 @@ function Governance({ gov, onReview }: any) {
         </div>
       </div>
     </div>
+  );
+}
+
+
+/* ============ 硬件版本记录（module_revisions 独立表）============ */
+function RevisionSection({ moduleId }: { moduleId: string }) {
+  const [revs, setRevs] = useState<any[]>([]);
+  const [form, setForm] = useState({ revision_code: "", identified_chip: "", changes: "" });
+  const load = useCallback(() => {
+    fetch(`/api/modules/${moduleId}/revisions`).then((r) => r.json()).then((d) => setRevs(d.revisions || []));
+  }, [moduleId]);
+  useEffect(() => { load(); }, [load]);
+  async function add() {
+    if (!form.revision_code) return;
+    await fetch(`/api/modules/${moduleId}/revisions`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(form),
+    });
+    setForm({ revision_code: "", identified_chip: "", changes: "" });
+    load();
+  }
+  return (
+    <section>
+      <h4>硬件版本记录 <span className="hint" style={{ fontWeight: 400 }}>同一淘宝商品可能换板换芯片，逐版记录</span></h4>
+      {revs.map((r) => (
+        <div key={r.revision_id} className="req-item">
+          <span className="rid">{r.revision_code}</span>
+          <span>{r.identified_chip && <b>{r.identified_chip} · </b>}{r.changes || "—"}
+            <span className="hint">（{String(r.created_at).slice(0, 10)}）</span></span>
+        </div>
+      ))}
+      <div className="ef-grid" style={{ gridTemplateColumns: "0.6fr 0.8fr 1.6fr auto", alignItems: "end", marginTop: 8 }}>
+        <F label="版本号"><input value={form.revision_code} placeholder="V2.1" onChange={(e) => setForm({ ...form, revision_code: e.target.value })} /></F>
+        <F label="实测芯片"><input value={form.identified_chip} placeholder="丝印/实测型号" onChange={(e) => setForm({ ...form, identified_chip: e.target.value })} /></F>
+        <F label="变化说明"><input value={form.changes} placeholder="换用国产替代芯片，引脚兼容但阈值不同" onChange={(e) => setForm({ ...form, changes: e.target.value })} /></F>
+        <button className="btn sm" onClick={add}>记录</button>
+      </div>
+    </section>
   );
 }

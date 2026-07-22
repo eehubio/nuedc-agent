@@ -1,3 +1,4 @@
-import { ensureSchema } from "../lib/db";
-await ensureSchema();
-console.log("✔ 数据库结构已初始化");
+import { ensureMigrations } from "../lib/migrations";
+
+await ensureMigrations();
+console.log("数据库迁移已应用（版本化 schema_migrations）");

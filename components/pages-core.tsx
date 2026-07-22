@@ -1,6 +1,6 @@
 "use client";
 import { useMemo, useState } from "react";
-import { PREP_TASKS, KNOWLEDGE_POINTS, TYPICAL_DIRECTIONS, FEATURES } from "../data/prep-content";
+import { PREP_TASKS, KNOWLEDGE_POINTS, TYPICAL_DIRECTIONS, FEATURES, COMPETITION_DATE, COMPETITION_NAME } from "../data/prep-content";
 import { CATEGORY_TREE, CAT_ICON, categoryLabel } from "../data/categories";
 import { STAGES, STAGE_LABEL } from "./Platform";
 
@@ -45,6 +45,8 @@ export function HomePage({ ctx }: { ctx: any }) {
           </button>
         ))}
       </div>
+
+      <Dashboard ctx={ctx} />
 
       <div className="grid" style={{ gridTemplateColumns: "1fr 300px", alignItems: "start" }}>
         <div style={{ display: "grid", gap: 14 }}>
@@ -230,6 +232,33 @@ export function ProjectsPage({ ctx }: { ctx: any }) {
         );
       })}
       {!ctx.projects.length && <p className="hint">还没有项目 —— 到「方案生成」页粘贴赛题即会自动创建。</p>}
+    </div>
+  );
+}
+
+
+/* ============ 项目驾驶舱 + 比赛倒计时 ============ */
+function Dashboard({ ctx }: { ctx: any }) {
+  const days = Math.ceil((new Date(COMPETITION_DATE).getTime() - Date.now()) / 86400000);
+  const reqs: any[] = (ctx.requirements?.requirements || []).filter((r: any) => r.status !== "REJECTED");
+  const mand = reqs.filter((r: any) => r.priority === "mandatory");
+  const confirmed = mand.filter((r: any) => r.status === "CONFIRMED").length;
+  const sum = ctx.testResult?.summary;
+  const hasProject = !!ctx.projectId;
+  return (
+    <div className="statsbar" style={{ marginBottom: 16 }}>
+      <span>⏱ {COMPETITION_NAME} {days > 0 ? <>还有 <b style={{ fontSize: 18 }}>{days}</b> 天</> : days > -5 ? <b style={{ color: "var(--red)" }}>比赛进行中</b> : <b>已结束</b>}</span>
+      {hasProject ? (
+        <>
+          <span>阶段 <b>{STAGE_LABEL[ctx.stage] || ctx.stage}</b></span>
+          {mand.length > 0 && <span>需求确认 <b style={{ color: confirmed === mand.length ? "var(--ok)" : "var(--amber)" }}>{confirmed}/{mand.length}</b></span>}
+          {ctx.chosenSolution && <span>主方案 <b>{ctx.chosenSolution.solution_id}</b>{ctx.backupSolution && <span className="chip violet" style={{ marginLeft: 4 }}>备 {ctx.backupSolution.solution_id}</span>}</span>}
+          {sum && <span>基本要求 <b style={{ color: sum.blockers.length ? "var(--red)" : "var(--ok)" }}>{sum.mandatory_passed}/{sum.mandatory_total}</b> · 预计 <b>{sum.score_low}~{sum.score_high}</b> 分</span>}
+          {sum?.blockers?.length > 0 && <span className="chip red">阻断 {sum.blockers.length}：{sum.blockers[0].slice(0, 16)}…</span>}
+        </>
+      ) : (
+        <span className="hint">还没有进行中的项目 —— 到「方案生成」粘贴赛题开始</span>
+      )}
     </div>
   );
 }

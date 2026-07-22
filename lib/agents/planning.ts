@@ -88,6 +88,7 @@ function DEFAULT_DIRECTIONS(deviceList: string[]): DirectionScoreInput[] {
 
 // ============ Agent 7：模块知识库（Module Knowledge）============
 // DB 检索 + LLM 推荐。推荐结果必须含理由/未满足指标/风险/替代模块。
+// 推荐时优先证据等级高（E5/E6 实测）的模块参数
 registerAgent("module_knowledge", async (input) => {
   const index = await loadModuleIndex();
   const catalog = moduleCatalogForLlm(index);
@@ -105,7 +106,7 @@ registerAgent("module_knowledge", async (input) => {
     }[];
     missing_capabilities: string[];
   }>({
-    system: `你是电赛模块选型专家。只能从下面的模块目录中推荐，禁止虚构模块 id。
+    system: `你是电赛模块选型专家。模块参数附有证据等级（E0 AI推断…E5/E6 实验室实测）时，推荐理由必须优先引用高证据等级的参数，并对仅有 E0~E2 证据的关键参数明确提示"需实测确认"。只能从下面的模块目录中推荐，禁止虚构模块 id。
 每条推荐必须给出：推荐理由、满足哪些需求（引用 REQ id）、尚未满足的指标、风险、可替代模块 id。
 目录中没有的能力放入 missing_capabilities，如实说明。
 模块目录：

@@ -51,3 +51,27 @@ export function stripPaidFields(moduleData: any) {
     assets_locked: true,
   };
 }
+
+
+// ============ 项目归属（诊断 5.5 轻量版）============
+// ezPLM 服务端调用：X-User-Id 头（与 EZPLM_API_KEY 同时出现才可信）
+// 浏览器直连：匿名 uid cookie（首次访问签发）——账号级隔离待 ezPLM SSO
+import { NextResponse } from "next/server";
+
+export function resolveOwner(req: NextRequest): { owner: string; isNew: boolean } {
+  const key = req.headers.get("x-api-key") || "";
+  if (process.env.EZPLM_API_KEY && key === process.env.EZPLM_API_KEY) {
+    const u = req.headers.get("x-user-id");
+    if (u) return { owner: `ezplm:${u}`, isNew: false };
+  }
+  const cookie = req.cookies.get("nuedc_uid")?.value;
+  if (cookie) return { owner: cookie, isNew: false };
+  return { owner: `anon:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`, isNew: true };
+}
+
+export function withOwnerCookie<T extends NextResponse>(res: T, owner: string, isNew: boolean): T {
+  if (isNew && owner.startsWith("anon:")) {
+    res.cookies.set("nuedc_uid", owner, { httpOnly: true, sameSite: "lax", maxAge: 400 * 24 * 3600, path: "/" });
+  }
+  return res;
+}

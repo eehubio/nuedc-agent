@@ -1,6 +1,13 @@
 {
   "functions": {
-    "app/api/agent/route.ts": { "maxDuration": 120 },
-    "app/api/report/route.ts": { "maxDuration": 120 }
+    "app/api/agent/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/report/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/agent-runs/route.ts": {
+      "maxDuration": 300
+    }
   }
 }

@@ -180,5 +180,6 @@ data/seed-modules.json    10 个种子模块（MSPM0/K230/TB6612/MPU6050/TPS5430
 ## 路线图（对应设计文档分期）
 
 - **一期（本仓库已实现）**：总控编排、赛题理解、题目预测、模块知识库、方案生成（含接口预检）、接口检查、BOM 整理、备料规划、代码生成（模块级）、调试助手、报告生成、模块上传审批、付费门控、ezPLM 嵌入
-- **二期**：真实编译流水线（CI 安装 arm-none-eabi-gcc/CCS CLI 编译后回写 `code_verifier` 的 external_status → COMPILED/HIL_TESTED；.github/workflows/ci.yml 已留注释位）、Agent 异步任务队列（run_id + 轮询/SSE，替代 120s 长请求）、ezPLM SSO 项目级权限（user_id/organization/membership）、LabSight 仪器接入、模块型号与硬件版本拆分（module_revisions）、参数证据等级（E0 AI 推断 → E6 多实验室复验）
+- **一期补充（已实现）**：Agent 异步任务（POST /api/agent-runs → run_id，waitUntil 后台执行 + 前端轮询，慢 Agent 不再受 120s 长请求限制）、版本化数据库迁移（lib/migrations.ts + schema_migrations 表，db:init 与运行时只补跑缺失迁移）、模块硬件版本拆分（module_revisions 独立表 + /api/modules/:id/revisions + 后台版本记录区）、参数证据等级（E0 AI 推断 → E6 多实验室复验；晋级 BENCHMARKED/COMPETITION_READY 强制要求 ≥1 条 E5 实测证据，推荐 Agent 优先引用高证据参数）、项目按用户隔离（ezPLM 传 X-User-Id 或匿名 cookie，各自只见自己的项目）、首页项目驾驶舱与比赛倒计时
+- **二期**：真实编译流水线（CI 安装 arm-none-eabi-gcc/CCS CLI 编译后回写 `code_verifier` 的 external_status；ci.yml 已留注释位）、ezPLM SSO 正式账号体系（organization/membership/项目角色）、LabSight 仪器接入、SSE 推送替代轮询、报告分章节编辑
 - **三期**：淘宝商品自动采集与 AI 芯片识别、模块知识图谱（依赖/替换/兼容/历届题目关系）、Word/PDF/LaTeX 报告导出、付费模块市场结算

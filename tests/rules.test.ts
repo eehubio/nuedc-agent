@@ -145,3 +145,23 @@ describe("管理会话令牌", () => {
     expect(verifyAdminToken(undefined, "secret-1")).toBe(false);
   });
 });
+
+describe("迁移框架", () => {
+  it("迁移编号唯一且递增", async () => {
+    const { MIGRATIONS } = await import("../lib/migrations");
+    const ids = MIGRATIONS.map((m) => m.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect([...ids].sort((a, b) => a - b)).toEqual(ids);
+  });
+});
+
+describe("证据等级 schema", () => {
+  it("合法证据通过校验，非法等级被拒", async () => {
+    const { evidenceRecordSchema } = await import("../lib/module-schema");
+    expect(evidenceRecordSchema.safeParse({
+      param: "power.peak_current_ma", value: 1.4, unit: "A",
+      evidence_level: "E5", conditions: "12V, 25°C", source_id: "TEST-2026-017",
+    }).success).toBe(true);
+    expect(evidenceRecordSchema.safeParse({ param: "x", value: 1, evidence_level: "E9" }).success).toBe(false);
+  });
+});

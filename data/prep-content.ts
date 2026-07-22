@@ -49,3 +49,8 @@ export const FEATURES: { key: string; name: string; desc: string; icon: string; 
   { key: "debug", name: "调试助手", desc: "故障定位与测量指引", icon: "🔬", color: "#0ea5e9" },
   { key: "report", name: "报告生成", desc: "按电赛规范一键成稿", icon: "📄", color: "#f59e0b" },
 ];
+
+
+/** 比赛日期（用于首页倒计时）。按官方通知更新；未开赛年份可先填预估。 */
+export const COMPETITION_DATE = "2026-07-29T08:00:00+08:00";
+export const COMPETITION_NAME = "2026 全国大学生电子设计竞赛";

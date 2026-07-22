@@ -29,6 +29,15 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
 
   const data = JSON.parse(String(rs.rows[0].data));
+  // 证据门禁（诊断 4.4/4.3）：高等级认证必须绑定实验室实测证据 —— 必须在任何写库之前拦截
+  if (["BENCHMARKED", "COMPETITION_READY"].includes(to)) {
+    const ev = (data.evidence_records || []).filter((e: any) => ["E5", "E6"].includes(e.evidence_level));
+    if (!ev.length) {
+      return NextResponse.json({
+        error: `晋级到 ${to} 需要至少一条 E5（实验室实测）及以上的参数证据。请先在模块编辑页的「参数证据」区录入实测记录（含测试条件与来源编号）。`,
+      }, { status: 422 });
+    }
+  }
   data.certification_status = to;
   await db().execute({
     sql: "UPDATE modules SET certification_status=?, data=?, updated_at=now() WHERE id=?",

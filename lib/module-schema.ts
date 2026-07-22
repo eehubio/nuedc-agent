@@ -41,6 +41,18 @@ export const sourceSnapshotSchema = z.object({
   school: z.string().optional(),
 });
 
+// 参数证据等级（诊断 4.4）：E0 AI 推断 → E6 多实验室复验
+export const EVIDENCE_LEVELS = ["E0", "E1", "E2", "E3", "E4", "E5", "E6"] as const;
+export const evidenceRecordSchema = z.object({
+  param: z.string(),                       // 参数路径，如 "power.peak_current_ma"
+  value: z.union([z.number(), z.string()]),
+  unit: z.string().optional(),
+  evidence_level: z.enum(EVIDENCE_LEVELS), // E0 AI推断/E1 商家/E2 社区/E3 芯片手册/E4 模块厂/E5 单实验室实测/E6 多实验室复验
+  source_id: z.string().optional(),        // 测试记录/手册页码
+  conditions: z.string().optional(),       // "12V, 25°C, 无风扇"
+  confidence: z.number().min(0).max(1).optional(),
+});
+
 export const moduleInputSchema = z.object({
   id: z.string().min(2).regex(/^[a-z0-9_\-]+$/, "id 只能包含小写字母、数字、下划线或连字符"),
   name: z.string().min(1),
@@ -72,6 +84,7 @@ export const moduleInputSchema = z.object({
     year: z.number(), problem: z.string(), note: z.string().optional(),
   })).default([]),
 
+  evidence_records: z.array(evidenceRecordSchema).default([]),
   certification_status: z.enum(MODULE_CERT_STATES).default("DRAFT"),
   source_snapshot: sourceSnapshotSchema.optional(),
   price: z.number().nonnegative().default(0),
