@@ -2,7 +2,10 @@
 import { useEffect, useRef, useState } from "react";
 import { PAST_PROBLEMS, PROBLEM_YEARS } from "../data/past-problems";
 
-export function StaleBanner({ ctx, types, label }: { ctx: any; types: string[]; label: string }) {
+/** 失效横幅：仅当「该产物已存在」且「被标记 stale」时显示。
+ *  产物从未生成过时提示"已过期"没有意义，反而让人以为出错了。 */
+export function StaleBanner({ ctx, types, label, exists }: { ctx: any; types: string[]; label: string; exists?: boolean }) {
+  if (exists === false) return null;
   if (!types.some((t) => ctx.staleTypes?.includes(t))) return null;
   return <div className="issue warning" style={{ display: "block", marginBottom: 12 }}>⚠ 主方案已变更，{label}可能已过期 —— 建议重新生成后再使用。</div>;
 }
@@ -209,7 +212,7 @@ export function WiringPage({ ctx }: { ctx: any }) {
   if (!sol) return <div className="card"><p className="hint">请先在「方案生成」页确认一套方案，这里将展示它的连线表并运行接口 / 电源规则检查。</p></div>;
   return (
     <>
-    <StaleBanner ctx={ctx} types={["integration_report"]} label="接口检查结果" />
+    <StaleBanner ctx={ctx} types={["integration_report"]} label="接口检查结果" exists={!!ctx.wiringReport} />
     <div className="grid cols-2" style={{ alignItems: "start" }}>
       <div style={{ display: "grid", gap: 14 }}>
         <div className="card">
@@ -307,10 +310,15 @@ export function CodePage({ ctx }: { ctx: any }) {
   }
   const b = ctx.codeBundle;
   const files = b?.files || [];
-  const mcu = ctx.chosenSolution?.blocks?.find((bl: any) => /mcu|主控/i.test(`${bl.role} ${bl.name}`));
+  // 功能块来源：已确认方案 → 候选方案列表兜底（方案确认后 blocks 应始终存在）
+  const solBlocks: any[] = ctx.chosenSolution?.blocks
+    || (ctx.solutions?.solutions || ctx.solutions?.candidate_solutions || [])
+        .find((s: any) => s.solution_id === ctx.chosenSolution?.solution_id)?.blocks
+    || [];
+  const mcu = solBlocks.find((bl: any) => /mcu|主控|controller/i.test(`${bl.role} ${bl.name}`));
   return (
     <>
-    <StaleBanner ctx={ctx} types={["code_bundle", "code_verification"]} label="生成的代码" />
+    <StaleBanner ctx={ctx} types={["code_bundle", "code_verification"]} label="生成的代码" exists={!!ctx.codeBundle?.files?.length} />
     <div className="code-wrap">
       <div className="card">
         <h3>工程文件</h3>
@@ -336,11 +344,11 @@ export function CodePage({ ctx }: { ctx: any }) {
       <div className="card">
         <h3>代码配置</h3>
         <p className="hint">开发平台：<b>{mcu ? `${mcu.name}（${mcu.module_id || ""}）` : "未确认方案"}</b></p>
-        <label className="hint">目标模块（留空自动选择）</label>
+        <label className="hint">目标模块（留空自动选择）{solBlocks.length > 0 && <> · 共 {solBlocks.length} 个功能块</>}</label>
         <select value={target} onChange={(e) => setTarget(e.target.value)} style={{ width: "100%", padding: 8, borderRadius: 8, border: "1px solid var(--line)", margin: "4px 0 10px" }}>
           <option value="">— 自动 —</option>
-          {(ctx.chosenSolution?.blocks || []).map((bl: any) => (
-            <option key={bl.block_id} value={bl.module_id || bl.name}>{bl.name}</option>
+          {solBlocks.map((bl: any) => (
+            <option key={bl.block_id} value={bl.module_id || bl.name}>{bl.name}{bl.module_id ? ` (${bl.module_id})` : ""}</option>
           ))}
         </select>
         <button className="btn" style={{ width: "100%" }} disabled={ctx.busy} onClick={async () => {

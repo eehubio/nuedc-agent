@@ -365,3 +365,20 @@ describe("方案解析容错（字段别名）", () => {
     expect(normalize(null)).toBeNull();
   });
 });
+
+describe("失效横幅显示条件", () => {
+  // 契约：产物不存在时不该提示"已过期"
+  function shouldShow(exists: boolean | undefined, staleTypes: string[], types: string[]) {
+    if (exists === false) return false;
+    return types.some((t) => staleTypes.includes(t));
+  }
+  it("产物未生成过 → 不显示", () => {
+    expect(shouldShow(false, ["code_bundle"], ["code_bundle"])).toBe(false);
+  });
+  it("产物存在且被标 stale → 显示", () => {
+    expect(shouldShow(true, ["code_bundle"], ["code_bundle"])).toBe(true);
+  });
+  it("产物存在但未 stale → 不显示", () => {
+    expect(shouldShow(true, ["bom"], ["code_bundle"])).toBe(false);
+  });
+});

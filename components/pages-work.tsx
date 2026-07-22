@@ -55,7 +55,11 @@ export function BomPage({ ctx }: { ctx: any }) {
   if (!items.length) return (
     <div className="card">
       <h3>物料清单还是空的</h3>
-      <p className="hint">两种方式生成 BOM：</p>
+      <p className="hint">
+        {ctx.chosenSolution
+          ? `已确认方案「${ctx.chosenSolution.name}」，点下方按钮即可按方案中的功能块生成物料清单（含备料数量规则与替代料）。`
+          : "尚未确认主方案 —— 建议先到「方案生成」页采用一套方案，这样 BOM 能直接按方案功能块生成。"}
+      </p>
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
         <button className="btn sm" disabled={ctx.busy || !ctx.chosenSolution} onClick={ctx.runBomFromSolution}>从已确认方案生成</button>
         <BomPaste ctx={ctx} />
