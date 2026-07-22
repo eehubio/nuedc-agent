@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import "@/lib/agents/index";
 import { runAgent } from "@/lib/agents/base";
-import { resolveTier } from "@/lib/auth";
+import { resolveTierAsync } from "@/lib/auth";
 import { db, ensureSchema } from "@/lib/db";
 import type { AgentType, ProjectStage } from "@/lib/types";
 import { AGENT_TYPES } from "@/lib/types";
@@ -12,7 +12,7 @@ export const maxDuration = 120;
 export async function OPTIONS() { return new NextResponse(null, { status: 204 }); }
 
 export async function POST(req: NextRequest) {
-  const tier = resolveTier(req);
+  const tier = await resolveTierAsync(req);
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
 

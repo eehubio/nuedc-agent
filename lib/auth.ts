@@ -1,7 +1,9 @@
 import type { NextRequest } from "next/server";
 import type { UserTier, ModuleCertState } from "./types";
 import { MODULE_CERT_STATES, PAID_DOWNLOAD_MIN_STATE } from "./types";
-import { ADMIN_COOKIE, verifyAdminToken } from "./admin-session";
+import { ADMIN_COOKIE, verifyAdminToken, safeEqual } from "./admin-session";
+
+export function safeEqualStr(a: string, b: string): boolean { return safeEqual(a, b); }
 
 // ============================================================
 // 鉴权策略：
@@ -99,4 +101,21 @@ export async function assertProjectAccess(req: NextRequest, projectId: string): 
     return NextResponse.json({ error: "无权访问该项目" }, { status: 403 });
   }
   return null;
+}
+
+
+/** 有效 tier（含兑换码授予的 paid）。API 路由中优先用这个而非 resolveTier。 */
+export async function resolveTierAsync(req: NextRequest): Promise<UserTier> {
+  const base = resolveTier(req);
+  if (base !== "free") return base;
+  try {
+    const { db, ensureSchema } = await import("./db");
+    await ensureSchema();
+    const { owner } = resolveOwner(req);
+    const rs = await db().execute({
+      sql: "SELECT 1 AS x FROM llm_usage WHERE owner=? AND kind='tier_grant' LIMIT 1",
+      args: [owner],
+    });
+    return rs.rows.length ? "paid" : "free";
+  } catch { return base; }
 }

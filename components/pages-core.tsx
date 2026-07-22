@@ -48,6 +48,7 @@ export function HomePage({ ctx }: { ctx: any }) {
       </div>
 
       <Dashboard ctx={ctx} />
+      <AccountCard />
 
       <div className="grid" style={{ gridTemplateColumns: "1fr 300px", alignItems: "start" }}>
         <div style={{ display: "grid", gap: 14 }}>
@@ -393,6 +394,56 @@ function Dashboard({ ctx }: { ctx: any }) {
       ) : (
         <span className="hint">还没有进行中的项目 —— 到「方案生成」粘贴赛题开始</span>
       )}
+    </div>
+  );
+}
+
+
+/* ============ 账户与套餐 ============ */
+export function AccountCard() {
+  const [acc, setAcc] = useState<any>(null);
+  const [code, setCode] = useState("");
+  const [msg, setMsg] = useState("");
+  const load = useCallback(() => { fetch("/api/account").then((r) => r.json()).then(setAcc).catch(() => {}); }, []);
+  useEffect(() => { load(); }, [load]);
+  if (!acc) return null;
+
+  const TIER_CN: Record<string, string> = { free: "免费", paid: "付费", lab: "实验室", admin: "管理员" };
+  const caps = acc.capabilities || {};
+  async function redeem() {
+    setMsg("");
+    const r = await fetch("/api/account", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ access_code: code }) }).then((x) => x.json());
+    if (r.ok) { setMsg("已升级为付费账户 ✓"); setCode(""); load(); }
+    else setMsg(r.error || "升级失败");
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h3>账户 <span className={"chip " + (acc.tier === "free" ? "" : "green")}>{TIER_CN[acc.tier] || acc.tier}</span></h3>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "6px 0" }}>
+        {[["代码生成", caps.code_generation], ["报告生成", caps.report_generation], ["调试助手", caps.debug_assistant],
+          ["资料下载", caps.asset_download], ["模块上传", caps.module_upload]].map(([label, on]) => (
+          <span key={String(label)} className={"chip " + (on ? "green" : "")}>{on ? "✓" : "🔒"} {label}</span>
+        ))}
+      </div>
+      {acc.usage_today && Object.keys(acc.usage_today).length > 0 && (
+        <p className="hint">今日用量：{Object.entries(acc.usage_today).map(([k, v]) => `${k} ${v} 次`).join(" · ")}</p>
+      )}
+      {acc.tier === "free" && (
+        acc.upgrade_available ? (
+          <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="输入兑换码升级为付费账户"
+              style={{ flex: 1, minWidth: 200, padding: 7, border: "1px solid var(--line)", borderRadius: 8 }} />
+            <button className="btn sm" onClick={redeem} disabled={!code.trim()}>升级</button>
+          </div>
+        ) : (
+          <div className="issue info" style={{ display: "block", marginTop: 8 }}>
+            代码生成、报告生成、调试助手为付费能力。独立部署时，在 Vercel 环境变量中设置 <code>PAID_ACCESS_CODE</code> 后，
+            此处会出现兑换码入口；接入 ezPLM 后由 ezPLM 统一下发账户等级。
+          </div>
+        )
+      )}
+      {msg && <p className="hint" style={{ marginTop: 6 }}>{msg}</p>}
     </div>
   );
 }

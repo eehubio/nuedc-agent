@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveTier, resolveOwner, assertProjectAccess } from "@/lib/auth";
+import { resolveTier, resolveTierAsync, resolveOwner, assertProjectAccess } from "@/lib/auth";
 import { db, ensureSchema, uid } from "@/lib/db";
 import type { AgentType } from "@/lib/types";
 import { AGENT_TYPES } from "@/lib/types";
@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 /** 任务层（与 agent_runs 执行日志分离）：
  *  POST 建任务（幂等键去重）；GET ?project_id=&active=1 列活动任务（刷新恢复用）。 */
 export async function POST(req: NextRequest) {
-  const tier = resolveTier(req);
+  const tier = await resolveTierAsync(req);
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
 

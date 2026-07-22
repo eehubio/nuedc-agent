@@ -204,31 +204,64 @@ registerAgent("bom_agent", async (input) => {
   const solution: SolutionProposal | undefined = input.solution;
   if (!rawText && !solution) return { ok: false, output: null, message: "请提供 raw_bom（文本/CSV 粘贴）或 solution（从方案生成 BOM）" };
 
+  // 从方案生成时：把功能块整理成明确的物料请求，模型才知道要"展开成器件"而不是原样复述
+  const blockList = (solution?.blocks || []).map((b: any, i: number) =>
+    `${i + 1}. 功能块 ${b.block_id}「${b.name}」${b.module_id ? `（模块库 id=${b.module_id}）` : "（无对应库模块，请按功能推断常用器件）"}${b.role ? ` 角色=${b.role}` : ""}`
+  ).join("\n");
   const source = rawText
     ? `用户粘贴的原始物料清单（可能来自 Excel/CSV/官方清单/手写，格式混乱）：\n${rawText.slice(0, 8000)}`
-    : `从以下方案提取物料：\n${JSON.stringify(solution).slice(0, 8000)}`;
+    : `请为下面这套方案生成采购物料清单。方案名称：${solution?.name || "未命名"}
+功能块清单（每个功能块至少产出 1 项物料）：
+${blockList || "（方案没有功能块，请回复空清单）"}
+
+电源树（据此补充电源相关物料）：
+${JSON.stringify(solution?.power_tree || []).slice(0, 1500)}
+
+连线概况（据此补充连接器/线材/电平转换等辅料）：
+${JSON.stringify((solution?.connections || []).slice(0, 20)).slice(0, 1500)}`;
 
   const out = await llmJson<{ items: BomItem[]; unresolved_items: string[] }>({
-    system: `你是电赛 BOM 规范化专家。把输入整理成规范物料清单：
+    system: `你是电赛 BOM 规范化专家，负责把方案或粗糙清单整理成可直接采购的物料清单。
+硬性要求：
+0. items 必须非空。输入若是方案功能块，则【每个功能块至少展开出 1 项物料】——
+   有 module_id 的直接作为成品模块列入（source_type=module）；
+   没有 module_id 的按功能推断该用什么器件（如"信号合路"→运放 OPA2277 或电阻网络）
 1. mpn 使用规范完整型号（如 MSPM0G3507SPTR），能识别 manufacturer 就填
 2. 区分 source_type：module（成品模块）还是 component（裸器件）
 3. 同物异名合并、数量汇总
 4. confidence 为型号识别置信度 0~1；不确定的型号如实给低分，禁止编造
 5. 无法解析的行放 unresolved_items 原文保留
-6. line_id 从 BOM-001 起编号`,
+6. line_id 从 BOM-001 起编号
+7. 别忘了配套辅料：电源模块、连接器/杜邦线、必要的电平转换、去耦电容等
+输出格式：{"items":[{"line_id":"BOM-001","mpn":"型号","name":"名称","manufacturer":"厂商","category":"分类","quantity":1,"source_type":"module","confidence":0.9,"substitutes":[]}],"unresolved_items":[]}`,
     messages: [{ role: "user", content: source }],
-    maxTokens: 4096,
+    maxTokens: 6144,
   });
 
+  // 运行时 Schema 校验：剔除结构非法行、强制转型数量/置信度
+  const bomParsed = parseArrayLoose(bomItemSchema, (out as any)?.items);
+  if (!bomParsed.data.length) {
+    return {
+      ok: false, output: null,
+      message: solution
+        ? `模型未能把方案「${solution.name}」展开成物料（方案有 ${(solution.blocks || []).length} 个功能块）。请重试；若反复失败，可用「粘贴文本/CSV 整理」手动录入。`
+        : "未能从输入解析出任何物料行，请检查粘贴内容格式。",
+    };
+  }
   // 规则层：备料数量规则 + 人工审核标记（不经过 LLM）
-  let items = applyQuantityRules(out.items || []);
+  let items = applyQuantityRules(bomParsed.data as any);
   items = flagForReview(items);
+  items = items.map((it: any, i: number) => ({ ...it, line_id: it.line_id || `BOM-${String(i + 1).padStart(3, "0")}` }));
 
+  const bomPartial = lastRepairApplied();
   const needReview = items.filter((i) => i.needs_review).length;
   return {
     ok: true,
     artifact_type: "bom",
-    output: { items, unresolved_items: out.unresolved_items || [] },
+    output: {
+      items, unresolved_items: out.unresolved_items || [],
+      dropped_rows: bomParsed.dropped, partial_output: bomPartial, repair_applied: bomPartial,
+    },
     human_review_required: needReview > 0,
     message: `整理出 ${items.length} 项${needReview ? `，${needReview} 项需人工确认（低置信度/替代料/功率风险）` : ""}`,
   };

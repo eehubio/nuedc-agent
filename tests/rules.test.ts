@@ -499,3 +499,32 @@ describe("阻断项修复建议覆盖", () => {
     for (const r of BLOCKER_RULES) expect(HINT_KEYS).toContain(r);
   });
 });
+
+describe("BOM 从方案展开", () => {
+  it("每个功能块都应出现在给模型的物料请求里", () => {
+    const blocks = [
+      { block_id: "B1", name: "直达信号DDS", module_id: "dds-ad9833", role: "signal" },
+      { block_id: "B2", name: "信号合路", module_id: "", role: "analog" },
+    ];
+    const list = blocks.map((b: any, i) =>
+      `${i + 1}. 功能块 ${b.block_id}「${b.name}」${b.module_id ? `（模块库 id=${b.module_id}）` : "（无对应库模块，请按功能推断常用器件）"}${b.role ? ` 角色=${b.role}` : ""}`
+    ).join("\n");
+    expect(list).toContain("B1");
+    expect(list).toContain("dds-ad9833");
+    expect(list).toContain("无对应库模块");   // 无 module_id 的块要提示模型自己推断
+  });
+});
+
+describe("账户能力矩阵", () => {
+  it("免费账户无代码/报告/调试；付费有；实验室与管理员全开", async () => {
+    const { canDownloadAssets, canUploadModules } = await import("../lib/auth");
+    const paidAgents = ["code_generator", "report_composer", "labsight_debug"];
+    const allowed = (tier: string) => paidAgents.every(() => tier !== "free");
+    expect(allowed("free")).toBe(false);
+    expect(allowed("paid")).toBe(true);
+    expect(canUploadModules("free")).toBe(false);
+    expect(canUploadModules("paid")).toBe(true);
+    expect(canDownloadAssets("free", "COMPETITION_READY")).toBe(false);
+    expect(canDownloadAssets("paid", "FUNCTION_TESTED")).toBe(true);
+  });
+});

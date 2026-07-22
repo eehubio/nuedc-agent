@@ -224,7 +224,8 @@ input, textarea, select { font: inherit; color: var(--ink); }
 .evi { font-size: 12px; color: var(--muted); margin: 2px 0 0 182px; }
 
 /* ============ 方案生成（对话式）============ */
-.solution-wrap { display: grid; grid-template-columns: 400px 1fr; gap: 14px; align-items: start; }
+.solution-wrap { display: grid; grid-template-columns: 1fr 400px; gap: 14px; align-items: start; }
+.solution-wrap > .assistant-col { position: sticky; top: 12px; }
 @media (max-width: 1000px) { .solution-wrap { grid-template-columns: 1fr; } }
 .steps { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
 .steps .st {
@@ -381,3 +382,26 @@ textarea.area {
   display: flex; flex-direction: column; gap: 6px; font: inherit; color: inherit;
 }
 .mod-card.as-button:hover { transform: translateY(-2px); box-shadow: 0 8px 22px rgba(16,42,100,.12); border-color: #c6d6f5; }
+
+
+/* 方案生成：跳转到方案的悬浮按钮 */
+.jump-fab {
+  position: fixed; right: 430px; bottom: 26px; z-index: 40;
+  background: var(--blue); color: #fff; border: 0; border-radius: 999px;
+  padding: 10px 18px; font-size: 13px; font-weight: 600; cursor: pointer;
+  box-shadow: 0 8px 24px rgba(37,99,235,.35);
+  display: flex; align-items: center; gap: 6px;
+}
+.jump-fab:hover { transform: translateY(-1px); }
+@media (max-width: 1000px) { .jump-fab { right: 20px; } }
+
+/* 框图画布：可拖动 */
+.diagram-canvas { position: relative; overflow: hidden; cursor: grab; user-select: none; }
+.diagram-canvas.dragging { cursor: grabbing; }
+.diagram-canvas svg { transition: none; }
+.diagram-toolbar { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.diagram-toolbar button {
+  border: 1px solid var(--line); background: #fff; border-radius: 6px;
+  padding: 3px 9px; font-size: 12px; cursor: pointer;
+}
+.diagram-toolbar button:hover { background: var(--bg); }

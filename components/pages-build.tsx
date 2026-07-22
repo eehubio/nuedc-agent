@@ -35,7 +35,12 @@ function roleBucket(b: any): "in" | "core" | "out" | "power" {
   if (/motor|actuator|display|comm|wireless|驱动|执行|显示|通信|dac|输出/.test(s)) return "out";
   return "in";
 }
-export function BlockDiagram({ solution }: { solution: any }) {
+export function BlockDiagram({ solution, ctx }: { solution: any; ctx?: any }) {
+  // 画布平移/缩放状态
+  const [view, setView] = useState({ x: 0, y: 0, k: 1 });
+  const drag = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [picked, setPicked] = useState<any>(null);
   const blocks: any[] = solution.blocks || [];
   const conns: any[] = solution.connections || [];
   const issues: any[] = solution.integration_precheck?.issues || [];
@@ -69,9 +74,37 @@ export function BlockDiagram({ solution }: { solution: any }) {
   const bucketFill: Record<string, string> = { in: "#eef6ff", core: "#dbeafe", out: "#eef2ff", power: "#fef6e7" };
   const bucketStroke: Record<string, string> = { in: "#93c5fd", core: "#2563eb", out: "#a5b4fc", power: "#f0c26a" };
 
+  function onDown(e: React.MouseEvent) {
+    drag.current = { sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y };
+    setDragging(true);
+  }
+  function onMove(e: React.MouseEvent) {
+    if (!drag.current) return;
+    setView((v) => ({ ...v, x: drag.current!.ox + (e.clientX - drag.current!.sx), y: drag.current!.oy + (e.clientY - drag.current!.sy) }));
+  }
+  function onUp() { drag.current = null; setDragging(false); }
+  function onWheel(e: React.WheelEvent) {
+    e.preventDefault();
+    setView((v) => ({ ...v, k: Math.min(2.5, Math.max(0.4, v.k * (e.deltaY < 0 ? 1.1 : 0.9))) }));
+  }
+  // 点击功能块 → 弹出模块详情（库里有资料就展示完整资料）
+  function openBlock(b: any) {
+    const mod = b.module_id && ctx?.modules?.find((m: any) => m.id === b.module_id);
+    setPicked(mod || { _fallback: true, ...b });
+  }
+
   return (
     <div className="diagram">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`方案 ${solution.name} 框图`}>
+      <div className="diagram-toolbar">
+        <button onClick={() => setView((v) => ({ ...v, k: Math.min(2.5, v.k * 1.2) }))}>＋ 放大</button>
+        <button onClick={() => setView((v) => ({ ...v, k: Math.max(0.4, v.k / 1.2) }))}>－ 缩小</button>
+        <button onClick={() => setView({ x: 0, y: 0, k: 1 })}>⟳ 复位</button>
+        <span className="hint">拖动可平移 · 滚轮缩放 · 点击功能块查看模块说明</span>
+      </div>
+      <div className={"diagram-canvas" + (dragging ? " dragging" : "")}
+        onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} onWheel={onWheel}>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`方案 ${solution.name} 框图`}
+        style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})`, transformOrigin: "0 0" }}>
         {conns.map((c, i) => {
           const fb = findBlock(c.from), tb = findBlock(c.to);
           if (!fb || !tb) return null;
@@ -95,7 +128,9 @@ export function BlockDiagram({ solution }: { solution: any }) {
           if (!p) return null;
           const bk = roleBucket(b);
           return (
-            <g key={b.block_id}>
+            <g key={b.block_id} style={{ cursor: "pointer" }}
+              onClick={(e) => { e.stopPropagation(); openBlock(b); }}>
+              <title>{`${b.name}｜点击查看模块说明`}</title>
               <rect x={p.x} y={p.y} width={W} height={H} rx={9} fill={bucketFill[bk]} stroke={bucketStroke[bk]} strokeWidth={bk === "core" ? 2 : 1.2} />
               <text x={p.x + W / 2} y={p.y + 21} textAnchor="middle" fontSize="11.5" fontWeight={700} fill="#1a2333">{b.name}</text>
               <text x={p.x + W / 2} y={p.y + 38} textAnchor="middle" fontSize="9.5" fill="#64748b" fontFamily="ui-monospace,monospace">{b.module_id || b.role}</text>
@@ -103,6 +138,8 @@ export function BlockDiagram({ solution }: { solution: any }) {
           );
         })}
       </svg>
+      </div>
+      {picked && <BlockInfoModal item={picked} onClose={() => setPicked(null)} />}
     </div>
   );
 }
@@ -111,7 +148,29 @@ export function BlockDiagram({ solution }: { solution: any }) {
 export function SolutionPage({ ctx }: { ctx: any }) {
   const [text, setText] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
+  const solRef = useRef<HTMLDivElement>(null);
+  const [showJump, setShowJump] = useState(false);
   useEffect(() => { logRef.current?.scrollTo({ top: 1e9 }); }, [ctx.msgs.length]);
+
+  const solList = ctx.solutions?.solutions || ctx.solutions?.candidate_solutions || [];
+  // 方案刚生成时自动滚到方案区（需求清单很长时用户容易不知道下面已有结果）
+  useEffect(() => {
+    if (solList.length) {
+      const t = setTimeout(() => solRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 300);
+      return () => clearTimeout(t);
+    }
+  }, [solList.length]);
+  // 方案不在视口内时显示悬浮跳转
+  useEffect(() => {
+    if (!solList.length) { setShowJump(false); return; }
+    const onScroll = () => {
+      const r = solRef.current?.getBoundingClientRect();
+      setShowJump(!!r && r.top > window.innerHeight - 80);
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [solList.length]);
 
   const step = ctx.chosenSolution ? 3 : ctx.solutions ? 2 : ctx.requirements ? 1 : 0;
   const steps = ["① 需求输入", "② 方案生成", "③ 方案核对", "④ 确认进入 BOM"];
@@ -127,45 +186,23 @@ export function SolutionPage({ ctx }: { ctx: any }) {
 
       {!ctx.requirements && <ProblemPicker ctx={ctx} />}
 
-      <div className="solution-wrap">
-        {/* 左：AI 助手对话 */}
-        <div className="card chatbox">
-          <div className="head"><span className="ai">AI</span>设计助手 · 渐进式方案发现</div>
-          <div className="chatlog" ref={logRef}>
-            {ctx.msgs.map((m: any, i: number) => (
-              <div key={i} className={"bubble " + m.who}>{m.text}</div>
-            ))}
-            {ctx.busy && <div className="bubble agent"><span className="spinner" /> 思考中…</div>}
-          </div>
-          <div className="quickrow">
-            {ctx.requirements && !ctx.solutions && (
-              <button className="btn sm" disabled={ctx.busy} onClick={() => ctx.runSolution()}>生成方案</button>
-            )}
-            {ctx.solutions && (
-              <>
-                <button className="btn ghost sm" disabled={ctx.busy} onClick={() => ctx.runSolution("safe")}>＋ 备选（稳妥）</button>
-                <button className="btn ghost sm" disabled={ctx.busy} onClick={() => ctx.runSolution("performance")}>＋ 备选（性能）</button>
-              </>
-            )}
-            {ctx.requirements && (
-              <button className="btn ghost sm" disabled={ctx.busy} onClick={() => ctx.runInterpret(ctx.problemText)}>重新解析赛题</button>
-            )}
-            {ctx.chosenSolution && (
-              <button className="btn ghost sm" onClick={() => ctx.setPage("wiring")}>去电路连线检查 →</button>
-            )}
-          </div>
-          <div className="chatin">
-            <textarea value={text} placeholder="粘贴赛题原文，或描述设计需求 / 向助手提问…"
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ctx.chat(text); setText(""); } }} />
-            <button className="btn" disabled={ctx.busy || !text.trim()} onClick={() => { ctx.chat(text); setText(""); }}>发送</button>
-          </div>
-        </div>
+      {showJump && (
+        <button className="jump-fab" onClick={() => solRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+          ⬇ 方案已生成（{solList.length} 套），点此查看
+        </button>
+      )}
 
-        {/* 右：需求 → 方案卡片 */}
+      <div className="solution-wrap">
+        {/* 左列（视觉上）：需求 → 方案卡片 */}
         <div style={{ display: "grid", gap: 14 }}>
           {ctx.requirements && <RequirementEditor ctx={ctx} />}
 
+          <div ref={solRef} />
+          {solList.length > 0 && (
+            <div className="statsbar" style={{ marginBottom: 10 }}>
+              ✅ 已生成 {solList.length} 套方案 —— 核对下方框图与接口预检后，点「采用为主方案」继续
+            </div>
+          )}
           {ctx.solutions?.partial_output && (
             <div className="issue blocker" style={{ display: "block" }}>
               ⚠ <b>本次输出不完整</b>（曾被截断并自动修复）：{ctx.solutions.truncation_note || "方案可能缺少部分连线或功能块。"}
@@ -186,7 +223,7 @@ export function SolutionPage({ ctx }: { ctx: any }) {
                   <span className="chip">{sol.risk_level === "low" ? "低风险" : sol.risk_level === "high" ? "高风险" : "中风险"}</span>
                 </h4>
                 <p className="hint" style={{ margin: "2px 0 6px" }}>{sol.summary}</p>
-                <BlockDiagram solution={sol} />
+                <BlockDiagram solution={sol} ctx={ctx} />
                 <div className="prosub">
                   <div className="p"><b>优势</b><ul>{(sol.advantages || []).map((a: string) => <li key={a}>{a}</li>)}</ul></div>
                   <div className="c"><b>代价 / 风险</b><ul>{(sol.disadvantages || []).map((a: string) => <li key={a}>{a}</li>)}</ul></div>
@@ -228,6 +265,40 @@ export function SolutionPage({ ctx }: { ctx: any }) {
           )}
         </div>
       </div>
+        {/* 右列（视觉上）：AI 助手对话，吸顶常驻 */}
+        <div className="card chatbox assistant-col">
+          <div className="head"><span className="ai">AI</span>设计助手 · 渐进式方案发现</div>
+          <div className="chatlog" ref={logRef}>
+            {ctx.msgs.map((m: any, i: number) => (
+              <div key={i} className={"bubble " + m.who}>{m.text}</div>
+            ))}
+            {ctx.busy && <div className="bubble agent"><span className="spinner" /> 思考中…</div>}
+          </div>
+          <div className="quickrow">
+            {ctx.requirements && !ctx.solutions && (
+              <button className="btn sm" disabled={ctx.busy} onClick={() => ctx.runSolution()}>生成方案</button>
+            )}
+            {ctx.solutions && (
+              <>
+                <button className="btn ghost sm" disabled={ctx.busy} onClick={() => ctx.runSolution("safe")}>＋ 备选（稳妥）</button>
+                <button className="btn ghost sm" disabled={ctx.busy} onClick={() => ctx.runSolution("performance")}>＋ 备选（性能）</button>
+              </>
+            )}
+            {ctx.requirements && (
+              <button className="btn ghost sm" disabled={ctx.busy} onClick={() => ctx.runInterpret(ctx.problemText)}>重新解析赛题</button>
+            )}
+            {ctx.chosenSolution && (
+              <button className="btn ghost sm" onClick={() => ctx.setPage("wiring")}>去电路连线检查 →</button>
+            )}
+          </div>
+          <div className="chatin">
+            <textarea value={text} placeholder="粘贴赛题原文，或描述设计需求 / 向助手提问…"
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ctx.chat(text); setText(""); } }} />
+            <button className="btn" disabled={ctx.busy || !text.trim()} onClick={() => { ctx.chat(text); setText(""); }}>发送</button>
+          </div>
+        </div>
+
     </>
   );
 }
@@ -244,7 +315,7 @@ export function WiringPage({ ctx }: { ctx: any }) {
       <div style={{ display: "grid", gap: 14 }}>
         <div className="card">
           <h3>方案连线 · {sol.name}</h3>
-          <BlockDiagram solution={{ ...sol, integration_precheck: rep }} />
+          <BlockDiagram solution={{ ...sol, integration_precheck: rep }} ctx={ctx} />
           <table className="data">
             <thead><tr><th>从</th><th>到</th><th>协议</th><th>电平</th><th>速率</th></tr></thead>
             <tbody>
@@ -799,6 +870,61 @@ function ProblemPicker({ ctx }: { ctx: any }) {
       )}
       {msg && <p className="hint" style={{ marginTop: 8 }}>{msg}</p>}
       <p className="hint" style={{ marginTop: 8 }}>💡 电赛题目下发即为 PDF，直接上传最省事；也可直接把题面粘贴到下方对话框。</p>
+    </div>
+  );
+}
+
+
+/* ============ 框图功能块说明弹窗 ============ */
+function BlockInfoModal({ item, onClose }: { item: any; onClose: () => void }) {
+  const isModule = !item._fallback;
+  return (
+    <div className="modal-mask" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3 style={{ marginTop: 0 }}>{item.name}</h3>
+        {isModule ? (
+          <>
+            <p className="hint">{item.main_chip} · {item.category}</p>
+            <p>{item.description}</p>
+            {item.interfaces?.length > 0 && (
+              <>
+                <h4>接口</h4>
+                <table className="data">
+                  <thead><tr><th>接口</th><th>类型</th><th>电平</th></tr></thead>
+                  <tbody>
+                    {item.interfaces.map((i: any, k: number) => (
+                      <tr key={k}><td>{i.name}</td><td>{i.interface_type}</td>
+                        <td>{i.voltage_level}V{i.five_v_tolerant ? "（5V 容忍）" : ""}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+            <h4>电气</h4>
+            <p className="hint">
+              供电 {item.power?.input_voltage_range?.join("~") || "—"}V ·
+              典型 {item.power?.typical_current_ma ?? "—"}mA
+              {item.power?.peak_current_ma ? ` · 峰值 ${item.power.peak_current_ma}mA` : ""}
+            </p>
+            {item.usage_notes?.length > 0 && (<><h4>使用要点</h4><ul>{item.usage_notes.map((n: string) => <li key={n}>{n}</li>)}</ul></>)}
+            {item.known_issues?.length > 0 && (<><h4>已知坑点</h4>{item.known_issues.map((n: string) => <div key={n} className="issue warning">⚠ {n}</div>)}</>)}
+          </>
+        ) : (
+          <>
+            <p className="hint">功能块 {item.block_id}{item.role ? ` · 角色 ${item.role}` : ""}</p>
+            <div className="issue info" style={{ display: "block" }}>
+              该功能块未绑定模块库中的具体模块{item.module_id ? `（引用的 ${item.module_id} 不在库中）` : ""}。
+              <br />可在方案卡片下方点该功能块的「替换」选一个真实模块，规则引擎才能对它做电平与电源校验。
+            </div>
+            {item.covers_requirements?.length > 0 && (
+              <><h4>覆盖需求</h4><p className="hint">{item.covers_requirements.join("、")}</p></>
+            )}
+          </>
+        )}
+        <div style={{ textAlign: "right", marginTop: 12 }}>
+          <button className="btn ghost sm" onClick={onClose}>关闭</button>
+        </div>
+      </div>
     </div>
   );
 }
