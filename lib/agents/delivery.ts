@@ -25,8 +25,14 @@ registerAgent("code_generator", async (input, ctx) => {
 1. 模块级生成：一次只生成一个功能模块的驱动/服务层代码（如 UART 协议、PID、传感器驱动），不生成整个工程
 2. 遵循分层结构 firmware/{bsp,drivers,middleware,algorithms,services,app,config}
 3. 代码含中文注释、引脚映射来自方案 connections、协议帧格式明确定义
-4. 依赖但无法确认的 SDK 函数放入 unsupported_items，禁止编造 API
-5. 输出的每个文件在 notes 里写明"需要人工验证的点"
+4. 关于 SDK API 的边界（务必区分）：
+   - 官方文档化的 SDK API【放心使用】：TI MSPM0 driverlib（DL_GPIO_*/DL_SPI_*/DL_ADC12_*/DL_SYSCTL_* 等）、
+     STM32 HAL（HAL_*）、ESP-IDF —— 这些是公开 SDK，使用它们是正确做法，不是编造
+   - SysConfig 生成物（ti_msp_dl_config.h、gSPI0_config、SPI0_INST 等实例宏）：直接 #include "ti_msp_dl_config.h"
+     并正常调用 SYSCFG_DL_init()；在 notes 注明"引脚/外设实例需在 SysConfig 中按连线表配置后重新生成"
+   - 只有【你自己发明的、任何文档都不存在的函数名】才算编造，才放 unsupported_items
+5. files 必须非空：至少输出该模块完整可编译的 .c/.h 文件（含 main 或明确的对外接口）
+6. 输出的每个文件在 notes 里写明"需要人工验证的点"
 目标芯片/工具链：${input.toolchain || "MSPM0G3507 + TI SysConfig/CCS（默认）"}`,
     messages: [
       {
@@ -40,12 +46,17 @@ registerAgent("code_generator", async (input, ctx) => {
     maxTokens: 8192,
   });
 
+  // 空文件不算成功：宁可失败重试，不能给用户一个空工程
+  const files = (out.files || []).filter((f) => f?.path && f?.content?.trim());
+  if (!files.length) {
+    return { ok: false, output: null, message: "模型未生成任何代码文件（可能把全部 SDK 调用误判为不可生成）。请重试；反复出现请反馈。" };
+  }
   return {
     ok: true,
     artifact_type: "code_bundle",
-    output: { ...out, verification_status: "GENERATED" }, // 状态机：GENERATED → COMPILED → HIL_TESTED
+    output: { ...out, files, verification_status: "GENERATED" },
     human_review_required: true,
-    message: `已生成 ${out.files?.length ?? 0} 个文件（状态 GENERATED，编译通过前不得标记为可用）`,
+    message: `已生成 ${files.length} 个文件（状态 GENERATED，编译通过前不得标记为可用）`,
   };
 });
 

@@ -362,7 +362,7 @@ export function CodePage({ ctx }: { ctx: any }) {
           <>
             <div className="issue info" style={{ marginTop: 10, display: "block" }}>
               验证状态：<b>{b.verification_status}</b>
-              <div style={{ display: "flex", gap: 3, margin: "6px 0" }}>
+              <div style={{ display: "flex", gap: 3, margin: "6px 0", flexWrap: "wrap" }}>
                 {["GENERATED", "SYNTAX_CHECKED", "SOURCE_COMPILED", "MINIMAL_LINKED", "SDK_BUILD_PASSED", "HIL_TESTED"].map((st) => (
                   <span key={st} className={"chip" + (b.verification_status === st ? " green" : "")} style={{ fontSize: 10 }}>{st}</span>
                 ))}

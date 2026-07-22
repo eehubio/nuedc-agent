@@ -360,7 +360,7 @@ export default function Platform({ embed }: { embed: boolean }) {
   }
 
   async function runBomFromSolution() {
-    if (!chosenSolution) { say("agent", "请先在「方案生成」页确认一套方案。"); return; }
+    if (!chosenSolution) { say("agent", "请先在「方案生成」页确认一套方案。"); return { ok: false, message: "尚未确认方案" } as any; }
     setBusy(true);
     const r = await callAgent("bom_agent", { solution: chosenSolution }, projectId);
     setBusy(false);
@@ -369,7 +369,7 @@ export default function Platform({ embed }: { embed: boolean }) {
       unstale("bom", "procurement_plan");
       if (projectId) await advanceStage("BOM_CONFIRMED");
       emitToEzplm("bom_ready", r.output);
-    }
+    } else say("agent", `BOM 生成失败：${r.message || ""}`);
     return r;
   }
 
