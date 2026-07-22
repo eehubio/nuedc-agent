@@ -177,40 +177,23 @@ async function preflight(): Promise<boolean> {
   }
   if (REAL) return true;
 
-  // 建一个探测项目跑一次最轻的任务，检查返回的 provider 是否为 mock
-  let cookie = "";
-  const call = async (path: string, init: RequestInit = {}) => {
-    const r = await fetch(BASE + path, { ...init, headers: { "content-type": "application/json", cookie, ...(init.headers || {}) } });
-    const sc = r.headers.get("set-cookie"); if (sc) cookie = sc.split(";")[0];
-    return { status: r.status, data: await r.json().catch(() => null) };
-  };
-  const p = await call("/api/projects", { method: "POST", body: JSON.stringify({ name: "压测预检" }) });
-  if (!p.data?.project_id) {
-    console.log(`⚠ 预检失败：创建项目返回 ${p.status} ${JSON.stringify(p.data)?.slice(0, 120)}`);
-    return false;
-  }
-  const t = await call("/api/agent-tasks", {
-    method: "POST",
-    body: JSON.stringify({ agent: "topic_forecast", project_id: p.data.project_id, input: { device_list: ["MSPM0"] } }),
-  });
-  if (!t.data?.task_id) { console.log("⚠ 预检任务创建失败，跳过 mock 校验"); return true; }
-  await fetch(`${BASE}/api/agent-tasks/${t.data.task_id}/execute`, { method: "POST", headers: { cookie } }).catch(() => {});
-  for (let i = 0; i < 20; i++) {
-    await sleep(1500);
-    const st = await call(`/api/agent-tasks/${t.data.task_id}`);
-    const s = st.data?.status;
-    if (s && !["queued", "running"].includes(s)) {
-      const provider = st.data?.result?.provider || st.data?.model || "";
-      if (/mock/i.test(String(provider))) { console.log(`✓ 预检通过：服务端使用 mock provider（${provider}）\n`); return true; }
-      console.log(`\n⛔ 服务端未使用 mock，实际 provider = "${provider}"`);
-      console.log("   这意味着压测会产生真实模型费用。请在部署环境设置 ENABLE_MOCK_PROVIDER=1 并【重新部署】后再跑；");
+  // 直接询问服务端当前选路结果（公开只读，不消耗 token、不依赖跑任务）
+  try {
+    const res = await fetch(`${BASE}/api/routing-preview`);
+    if (res.ok) {
+      const d = await res.json();
+      if (d.mock_enabled) {
+        console.log(`✓ 预检通过：服务端启用 mock provider（首选 ${d.primary_candidate || "mock"}）\n`);
+        return true;
+      }
+      console.log(`\n⛔ 服务端未启用 mock，实际首选 provider = "${d.primary_candidate || "未知"}"`);
+      console.log("   压测会产生真实模型费用。请在部署环境设置 ENABLE_MOCK_PROVIDER=1 并【重新部署】后再跑；");
       console.log("   若确认要用真实模型压测，请显式加 --real 参数。\n");
       return false;
     }
-  }
-  console.log("⚠ 预检超时，未能确认 provider，中止以免误烧费用。加 --real 可跳过此检查。");
-  return false;
-}
+  } catch { /* 端点不存在时落到下面的任务探测 */ }
+
+  console.log("⚠ 服务端无 /api/routing-preview（可能是旧版本部署），改用任务探测…");
 
 async function main() {
   console.log(`压测目标：${BASE}`);

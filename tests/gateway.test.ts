@@ -339,3 +339,43 @@ describe("压测脚本与状态机一致性", () => {
     expect(src).toContain("会产生真实模型费用");
   });
 });
+
+describe("选路预览端点（压测预检依赖）", () => {
+  it("mock 开启时如实报告 mock，且不泄露密钥", async () => {
+    process.env.ENABLE_MOCK_PROVIDER = "1";
+    vi.resetModules();
+    const mod: any = await import("../app/api/routing-preview/route");
+    const d = await (await mod.GET()).json();
+    expect(d.mock_enabled).toBe(true);
+    expect(d.primary_candidate).toContain("mock");
+    // 不得包含任何密钥字段
+    expect(JSON.stringify(d)).not.toMatch(/API_KEY|sk-|Bearer/i);
+    delete process.env.ENABLE_MOCK_PROVIDER;
+  });
+
+  it("mock 关闭时报告真实 Provider，压测预检据此中止", async () => {
+    delete process.env.ENABLE_MOCK_PROVIDER;
+    process.env.GEMINI_API_KEY = "fake";
+    process.env.GEMINI_MODEL = "gemini-2.5-flash";
+    vi.resetModules();
+    const mod: any = await import("../app/api/routing-preview/route");
+    const d = await (await mod.GET()).json();
+    expect(d.mock_enabled).toBe(false);
+    expect(d.primary_candidate).toContain("gemini");
+  });
+});
+
+describe("任务模型名不再臆测", () => {
+  it("建任务时不按 LLM_PROVIDER 猜模型名（实际由网关选路决定）", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("app/api/agent-tasks/route.ts", "utf8");
+    expect(src).not.toMatch(/process\.env\.LLM_PROVIDER === "gemini"/);
+    expect(src).toContain("执行完成后回写实际值");
+  });
+  it("执行完成后从用量事件回写真实 provider 与 model", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("app/api/agent-tasks/[id]/execute/route.ts", "utf8");
+    expect(src).toContain("MAX(provider) provider");
+    expect(src).toContain("model=COALESCE(?, model)");
+  });
+});

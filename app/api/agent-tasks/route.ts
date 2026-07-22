@@ -85,9 +85,8 @@ export async function POST(req: NextRequest) {
   }
 
   const taskId = uid("TASK");
-  const model = process.env.LLM_PROVIDER === "gemini" ? (process.env.GEMINI_MODEL || "gemini-2.0-flash")
-    : process.env.LLM_PROVIDER === "openai" ? (process.env.OPENAI_MODEL || "gpt-4o-mini")
-    : (process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6");
+  // 模型名不在建单时臆测（选路由网关在执行时决定，可能容灾切换）——执行完成后回写实际值
+  const model: string | null = null;
   await db().execute({
     sql: `INSERT INTO agent_tasks (task_id, project_id, agent_type, status, input, tier, idempotency_key, model,
             task_type, priority, input_hash, owner_ref, queue_name, scheduled_at)

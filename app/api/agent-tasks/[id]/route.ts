@@ -9,7 +9,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const rs = await db().execute({
     sql: `SELECT task_id, project_id, agent_type, task_type, status, output, error, model, attempts,
             cancel_requested, updated_at, created_at, priority, token_input, token_output,
-            estimated_cost, fallback_count FROM agent_tasks WHERE task_id=?`,
+            estimated_cost, fallback_count, provider_hint FROM agent_tasks WHERE task_id=?`,
     args: [params.id],
   });
   if (!rs.rows.length) return NextResponse.json({ error: "任务不存在" }, { status: 404 });
@@ -47,6 +47,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   return NextResponse.json({
     task_id: r.task_id, agent: r.agent_type, task_type: r.task_type, status: r.status, model: r.model,
     attempts: r.attempts, result, error: r.error || null, queue,
+    provider: r.provider_hint || null,
     tokens: { input: Number(r.token_input || 0), output: Number(r.token_output || 0) },
     cost: Number(r.estimated_cost || 0),
     fallback_used: Number(r.fallback_count || 0) > 0,

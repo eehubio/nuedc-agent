@@ -40,7 +40,8 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     // 汇总本次任务的模型用量（可追踪到任务与 Artifact）
     const usage = await db().execute({
       sql: `SELECT COALESCE(SUM(input_tokens),0) ti, COALESCE(SUM(output_tokens),0) to_,
-                   COALESCE(SUM(estimated_cost),0) cost, SUM(fallback_used) fb
+                   COALESCE(SUM(estimated_cost),0) cost, SUM(fallback_used) fb,
+                   MAX(provider) provider, MAX(model) model
             FROM llm_usage_events WHERE task_id=?`,
       args: [params.id],
     }).catch(() => ({ rows: [{}] as any[] }));
@@ -51,10 +52,12 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     await db().execute({
       sql: `UPDATE agent_tasks SET status=?, output=?, error=?, last_run_id=?,
               token_input=?, token_output=?, estimated_cost=?, fallback_count=?,
+              model=COALESCE(?, model), provider_hint=COALESCE(?, provider_hint),
               completed_at=now(), updated_at=now() WHERE task_id=?`,
       args: [canceled ? "canceled" : result.ok ? "ok" : "error", JSON.stringify(result),
         canceled ? "已取消（结果作废）" : result.ok ? null : result.message || "failed", result.run_id || null,
-        Number(u.ti || 0), Number(u.to_ || 0), Number(u.cost || 0), Number(u.fb || 0), params.id],
+        Number(u.ti || 0), Number(u.to_ || 0), Number(u.cost || 0), Number(u.fb || 0),
+        u.model ? String(u.model) : null, u.provider ? String(u.provider) : null, params.id],
     });
     // 直接回传结果：前端拿到即用，避免"服务端已完成但前端还在轮询"的竞态
     return NextResponse.json({
