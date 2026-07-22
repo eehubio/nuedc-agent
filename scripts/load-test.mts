@@ -191,9 +191,13 @@ async function preflight(): Promise<boolean> {
       console.log("   若确认要用真实模型压测，请显式加 --real 参数。\n");
       return false;
     }
-  } catch { /* 端点不存在时落到下面的任务探测 */ }
+  } catch { /* 端点不存在时落到下面的兜底判断 */ }
 
-  console.log("⚠ 服务端无 /api/routing-preview（可能是旧版本部署），改用任务探测…");
+  // 旧版本部署没有该端点时，无法确认 provider —— 保守中止，避免误烧真实费用
+  console.log("\n⚠ 服务端无 /api/routing-preview（可能是旧版本部署），无法确认是否为 mock。");
+  console.log("   请先部署最新代码；若确认要用真实模型压测，请显式加 --real 参数。\n");
+  return false;
+}
 
 async function main() {
   console.log(`压测目标：${BASE}`);

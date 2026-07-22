@@ -379,3 +379,23 @@ describe("任务模型名不再臆测", () => {
     expect(src).toContain("model=COALESCE(?, model)");
   });
 });
+
+describe("脚本语法完整性（防交付坏文件）", () => {
+  const SCRIPTS = ["scripts/load-test.mts", "scripts/e2e-smoke.mts", "scripts/build-runner.mts", "scripts/verify-docx.mts"];
+  it("所有可执行脚本括号配平且能被 esbuild 解析", async () => {
+    const fs = await import("node:fs");
+    const { execFileSync } = await import("node:child_process");
+    for (const f of SCRIPTS) {
+      if (!fs.existsSync(f)) continue;
+      const src = fs.readFileSync(f, "utf8");
+      const open = (src.match(/\{/g) || []).length;
+      const close = (src.match(/\}/g) || []).length;
+      expect(open, `${f} 花括号不配平`).toBe(close);
+      // 真正交给编译器验证，比数括号更可靠
+      // 脚本使用 top-level await，必须以 ESM 格式解析
+      expect(() => execFileSync("npx",
+        ["esbuild", f, "--bundle", "--platform=node", "--format=esm", "--outfile=/dev/null"],
+        { stdio: "pipe" }), `${f} 无法通过 esbuild 解析`).not.toThrow();
+    }
+  }, 60_000);
+});
