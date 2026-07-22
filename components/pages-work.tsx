@@ -88,7 +88,7 @@ export function BomPage({ ctx }: { ctx: any }) {
 
   return (
     <>
-      <StaleBanner ctx={ctx} types={["bom", "procurement_plan"]} label="物料清单" />
+      <StaleBanner ctx={ctx} types={["bom", "procurement_plan"]} label="物料清单" exists={!!ctx.bom?.items?.length} />
       {ctx.bom?.partial_output && (
         <div className="issue blocker" style={{ display: "block", marginBottom: 12 }}>
           ⚠ <b>物料清单可能不完整</b>：本次输出曾被截断修复，末尾物料可能缺失。请对照方案功能块核对后再采购。
@@ -190,7 +190,7 @@ export function TestingPage({ ctx }: { ctx: any }) {
 
   return (
     <>
-      <StaleBanner ctx={ctx} types={["test_plan", "score", "test_report"]} label="测试计划与得分" />
+      <StaleBanner ctx={ctx} types={["test_plan", "score", "test_report"]} label="测试计划与得分" exists={!!(ctx.testPlan || ctx.testResult)} />
       {sum && (
         <div className="statsbar" style={{ marginBottom: 14 }}>
           <span className={"chip " + (sum.score_basis === "official" ? "green" : "gold")}>{sum.score_basis === "official" ? `官方分值 · 总分 ${sum.official_total}` : "估算口径 60+40"}</span>

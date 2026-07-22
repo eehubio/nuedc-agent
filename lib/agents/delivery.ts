@@ -34,17 +34,36 @@ registerAgent("code_generator", async (input, ctx) => {
    - 只有【你自己发明的、任何文档都不存在的函数名】才算编造，才放 unsupported_items
 5. files 必须非空：至少输出该模块完整可编译的 .c/.h 文件（含 main 或明确的对外接口）
 6. 输出的每个文件在 notes 里写明"需要人工验证的点"
-目标芯片/工具链：${input.toolchain || "MSPM0G3507 + TI SysConfig/CCS（默认）"}`,
+7. 【代码从哪来】你直接依据芯片官方 SDK 的公开 API 编写实现，不是从模块库复制 ——
+   模块库只提供引脚/接口/注意事项等约束信息，驱动逻辑由你按 SDK 规范生成
+目标芯片/工具链：${input.toolchain || "MSPM0G3507 + TI SysConfig/CCS（默认）"}
+
+输出格式（严格遵守，files 至少 2 项且 content 非空）：
+{"plan":[{"layer":"drivers","files":["xxx.c","xxx.h"]}],
+ "files":[{"path":"firmware/drivers/xxx.c","language":"c","content":"#include ...\n完整代码","notes":"需人工验证：引脚需在 SysConfig 中配置"}],
+ "integration_notes":["..."],"unsupported_items":[]}`,
     messages: [
       {
         role: "user",
-        content: `要生成的模块：${target || "（按方案顺序生成第一个未完成模块）"}
-方案上下文：${JSON.stringify(solution || {}).slice(0, 6000)}
-相关模块库资料：${JSON.stringify(relatedModules.map((m: any) => ({ id: m.id, name: m.name, interfaces: m.interfaces, code_repositories: m.code_repositories }))).slice(0, 4000)}
-补充要求：${input.notes || "无"}`,
+        content: `请为下面这个功能模块生成可编译的固件代码。
+
+【目标模块】${target || "（方案中的主控模块）"}
+【所属方案】${solution?.name || "未命名"}
+【该模块在方案中的连线】
+${(solution?.connections || [])
+  .filter((c: any) => !target || `${c.from} ${c.to}`.toLowerCase().includes(String(target).toLowerCase().slice(0, 8)))
+  .map((c: any) => `- ${c.from} → ${c.to}（${c.protocol}${c.baudrate ? ` @${c.baudrate}` : ""}，${c.voltage_from}V→${c.voltage_to}V）`)
+  .join("\n") || "（连线表未提供，请按常规接法生成并在 notes 注明假设）"}
+【方案全部功能块】
+${(solution?.blocks || []).map((b: any) => `- ${b.block_id} ${b.name}${b.module_id ? `（${b.module_id}）` : ""}`).join("\n") || "无"}
+【相关模块库资料】
+${JSON.stringify(relatedModules.map((m: any) => ({ id: m.id, name: m.name, interfaces: m.interfaces, usage_notes: m.usage_notes }))).slice(0, 3000)}
+【补充要求】${input.notes || "无"}
+
+必须输出至少 2 个文件（如 xxx.c + xxx.h，或 main.c + 驱动文件），每个文件内容完整可编译。`,
       },
     ],
-    maxTokens: 8192,
+    maxTokens: 10240,
   });
 
   // 运行时校验 + 空文件不算成功

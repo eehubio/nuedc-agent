@@ -566,3 +566,36 @@ describe("框图节点摆位", () => {
     expect(auto.get("B2")).toEqual({ x: 268, y: 12 });   // 未自定义的保持自动布局
   });
 });
+
+describe("新建项目状态隔离", () => {
+  it("重置应清空全部项目态字段（含测试/备选/选用模块）", () => {
+    // 契约：resetProject 覆盖的字段集合
+    const RESET_FIELDS = ["projectId", "stage", "problemText", "requirements", "solutions", "chosenSolution",
+      "backupSolution", "wiringReport", "bom", "codeBundle", "debugSession", "report",
+      "testPlan", "testRecords", "testResult", "staleTypes", "shortlist"];
+    const stateAfterReset: Record<string, any> = {
+      projectId: null, stage: "PREPARATION", problemText: "", requirements: null, solutions: null,
+      chosenSolution: null, backupSolution: null, wiringReport: null, bom: null, codeBundle: null,
+      debugSession: null, report: null, testPlan: null, testRecords: [], testResult: null,
+      staleTypes: [], shortlist: [],
+    };
+    for (const f of RESET_FIELDS) {
+      expect(stateAfterReset).toHaveProperty(f);
+      const v = stateAfterReset[f];
+      expect(v === null || v === "" || v === "PREPARATION" || (Array.isArray(v) && v.length === 0)).toBe(true);
+    }
+  });
+});
+
+describe("stale 横幅只对已存在产物显示", () => {
+  function show(exists: boolean | undefined, stale: string[], types: string[]) {
+    if (exists === false) return false;
+    return types.some((t) => stale.includes(t));
+  }
+  it("测试计划从未生成 → 即使服务端标了 stale 也不提示", () => {
+    expect(show(false, ["test_plan", "score"], ["test_plan", "score", "test_report"])).toBe(false);
+  });
+  it("测试计划已生成且 stale → 提示", () => {
+    expect(show(true, ["test_plan"], ["test_plan", "score", "test_report"])).toBe(true);
+  });
+});

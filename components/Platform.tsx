@@ -104,7 +104,8 @@ export default function Platform({ embed }: { embed: boolean }) {
       if (L.test_record) setTestRecords(L.test_record.content?.records || []);
       if (L.score) setTestResult(L.score.content);
       if (L.report) setReport(L.report.content);
-      setStaleTypes((d.latest || []).filter((a: any) => a.status === "stale").map((a: any) => a.type));
+      // 只有"确实存在且被标记 stale"的产物类型才进入横幅列表
+      setStaleTypes((d.latest || []).filter((a: any) => a.status === "stale" && a.content).map((a: any) => a.type));
       // 活动任务续跑：刷新页面不中断
       const t = await api(`/api/agent-tasks?project_id=${projectId}&active=1`);
       const task = t.tasks?.[0];
@@ -160,8 +161,10 @@ export default function Platform({ embed }: { embed: boolean }) {
 
   function resetProject() {
     setProjectId(null); setStage("PREPARATION"); setProblemText("");
-    setRequirements(null); setSolutions(null); setChosenSolution(null);
+    setRequirements(null); setSolutions(null); setChosenSolution(null); setBackupSolution(null);
     setWiringReport(null); setBom(null); setCodeBundle(null); setDebugSession(null); setReport(null);
+    setTestPlan(null); setTestRecords([]); setTestResult(null); setStaleTypes([]);
+    setShortlist([]);
     setMsgs((m) => m.slice(0, 1));
   }
 
@@ -480,8 +483,10 @@ export default function Platform({ embed }: { embed: boolean }) {
   }
 
   function startFromDirection(seed: string) {
+    // 从首页方向卡进入 = 开一个全新项目，必须先清空上一个项目的全部状态
+    resetProject();
     setPage("solution");
-    runInterpret(seed);
+    setTimeout(() => runInterpret(seed), 0);   // 等状态清空后再发起解析
   }
 
   const stageIdx = STAGES.indexOf(stage as any);
