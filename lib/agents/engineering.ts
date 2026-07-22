@@ -9,7 +9,7 @@ import type { SolutionProposal, BomItem } from "../types";
 // 生成两套候选方案；生成后立刻用规则引擎做接口预检，把结果附在方案上
 registerAgent("solution_architect", async (input) => {
   const index = await loadModuleIndex();
-  const catalog = moduleCatalogForLlm(index);
+  const catalog = moduleCatalogForLlm(index, { preferred: input.preferred_modules || [], limit: 40 });
   const requirements = input.requirements;
   if (!requirements) return { ok: false, output: null, message: "缺少 requirements（先运行赛题理解 Agent）" };
   // 需求确认门禁：所有必须项需人工确认（REJECTED 视为删除）；input.force=true 可越过（原型探索用）
@@ -20,25 +20,42 @@ registerAgent("solution_architect", async (input) => {
   }
   requirements.requirements = reqList.filter((r) => r.status !== "REJECTED");
 
-  const out = await llmJson<{ candidate_solutions: SolutionProposal[]; recommended_solution: string; rationale: string }>({
-    system: `你是电赛系统方案架构师。基于结构化需求生成 2 套候选方案（SOL-A / SOL-B），要求：
+  // ---- 分次生成：两套方案各一次调用，单次输出量减半，从根本上避免截断 ----
+  // （一次性生成两套方案 + 框图 + 连线 + 电源树，即使 12k token 也常被截断）
+  const SHARED_RULES = `你是电赛系统方案架构师。要求：
 1. 优先使用模块目录中的模块（引用真实 module_id）；目录没有的写 module_id 为空并在 name 里说明
 2. 每个 block 标注 covers_requirements（引用 REQ id）；未覆盖的需求列入 uncovered_requirements
 3. connections 写清接口端点（形如 "K230.UART1_TX" → "MSPM0.UART0_RX"）、protocol、voltage_from/voltage_to
 4. power_tree 写清每条电源轨的电压、来源、负载和电流预算 budget_ma
-5. 两套方案在主控/算法/实现路径上要有真实差异，各自给出优缺点、风险等级、预计实现小时数
+5. 给出优缺点、风险等级、预计实现小时数
 6. 四天三夜可完成性是第一约束
+7. 篇幅控制：summary ≤50 字，每条优缺点 ≤20 字，功能块数量控制在 4~8 个
 模块目录：
-${catalog || "（模块库为空，允许方案使用通用模块名，module_id 留空）"}`,
-    messages: [{ role: "user", content: `结构化需求：\n${JSON.stringify(requirements).slice(0, 8000)}\n补充约束：${input.constraints || "无"}\n用户已选用的优先模块（在满足需求的前提下优先采用这些 id）：${JSON.stringify(input.preferred_modules || [])}` }],
-    maxTokens: 12288,
-    temperature: 0.5,
-  });
+${catalog || "（模块库为空，允许方案使用通用模块名，module_id 留空）"}`;
 
-  // 结构校验：截断修复可能只保住残缺方案 —— 残缺不得当成功返回
-  const rawSols = (out as any)?.candidate_solutions || (out as any)?.solutions;
-  if (!Array.isArray(rawSols) || !rawSols.length) {
-    return { ok: false, output: null, message: "模型输出不完整（未解析出任何方案）。建议减少已选用模块数量、精简需求后重试。" };
+  const userCtx = `结构化需求：\n${JSON.stringify(requirements).slice(0, 6000)}\n补充约束：${input.constraints || "无"}\n用户已选用的优先模块：${JSON.stringify(input.preferred_modules || [])}`;
+
+  async function genOne(id: string, flavor: string) {
+    return llmJson<{ solution: SolutionProposal }>({
+      system: `${SHARED_RULES}\n\n本次只生成【一套】方案，solution_id 固定为 "${id}"，技术路线取向：${flavor}。
+只输出 {"solution": {...}} 一个对象。`,
+      messages: [{ role: "user", content: userCtx }],
+      maxTokens: 8192,
+      temperature: 0.5,
+    }).then((r) => r.solution).catch(() => null);
+  }
+
+  // 并行生成两套（互不依赖），任一失败不影响另一套
+  const [solA, solB] = await Promise.all([
+    genOne("SOL-A", "稳妥优先：成熟模块、实现风险低、调试链路短"),
+    genOne("SOL-B", "性能优先：更强算力或更高精度路径，与 A 在主控/算法上有实质差异"),
+  ]);
+  const out: any = { rationale: "", recommended_solution: "SOL-A" };
+  const rawSols = [solA, solB].filter((x): x is SolutionProposal => !!x);
+
+  // 结构校验：残缺方案不得当成功返回
+  if (!rawSols.length) {
+    return { ok: false, output: null, message: "两套方案均生成失败。可能是需求过多导致输出超限 —— 建议精简需求清单后重试，或检查 LLM API 配额。" };
   }
   const usable = rawSols.filter(
     (sl: any) => sl?.solution_id && sl?.name && Array.isArray(sl.blocks) && sl.blocks.length
@@ -46,8 +63,8 @@ ${catalog || "（模块库为空，允许方案使用通用模块名，module_id
   if (!usable.length) {
     return { ok: false, output: null, message: "模型输出被截断，方案缺少功能块。建议减少已选用模块数量后重试。" };
   }
-  const truncation_note = usable.length < rawSols.length
-    ? `模型输出偏长，已丢弃 ${rawSols.length - usable.length} 套残缺方案，保留 ${usable.length} 套完整方案`
+  const truncation_note = usable.length < 2
+    ? `仅生成出 ${usable.length} 套完整方案（另一套输出残缺已丢弃）。可点「生成候选方案」重试补齐。`
     : undefined;
 
   // 生成后立即做规则预检（需求覆盖 + 接口兼容），结果附在每套方案上

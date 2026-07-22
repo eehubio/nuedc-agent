@@ -288,3 +288,24 @@ describe("方案输出契约", () => {
     expect(usable[0].solution_id).toBe("SOL-A");
   });
 });
+
+describe("模块目录裁剪", () => {
+  it("优先模块置顶、按认证等级排序、超限截断并注明", async () => {
+    const { moduleCatalogForLlm } = await import("../lib/agents/base");
+    const index: Record<string, any> = {};
+    for (let i = 0; i < 50; i++) {
+      index[`m${i}`] = { id: `m${i}`, name: `模块${i}`, category: "sensor.other",
+        certification_status: i < 5 ? "DRAFT" : "COMPETITION_READY", interfaces: [], power: {} };
+    }
+    const out = moduleCatalogForLlm(index, { preferred: ["m3"], limit: 10 });
+    const lines = out.split("\n");
+    expect(lines[0]).toContain("id=m3");            // 优先模块置顶（即便它是 DRAFT）
+    expect(lines[1]).toContain("COMPETITION_READY"); // 其余按认证排序
+    expect(out).toContain("另有 40 个模块未列出");
+  });
+  it("小库不截断、不加注释", async () => {
+    const { moduleCatalogForLlm } = await import("../lib/agents/base");
+    const out = moduleCatalogForLlm({ a: { id: "a", name: "A", category: "c", certification_status: "DRAFT", interfaces: [], power: {} } });
+    expect(out).not.toContain("未列出");
+  });
+});

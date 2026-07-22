@@ -318,7 +318,7 @@ export default function Platform({ embed }: { embed: boolean }) {
     if (!requirements) { say("agent", "请先把赛题发给我完成需求解析。"); return; }
     setBusy(true);
     say("user", "生成候选方案");
-    say("agent", "正在设计两套候选方案（含框图与接口预检），通常需要 1~2 分钟，请稍候……");
+    say("agent", "正在设计两套候选方案（各自独立生成，含框图与接口预检），通常需要 1~2 分钟，请稍候……");
     const r = await callAgent("solution_architect", {
       requirements,
       preferred_modules: shortlist.length ? shortlist : undefined,
@@ -329,7 +329,7 @@ export default function Platform({ embed }: { embed: boolean }) {
       const n = (r.output?.solutions || r.output?.candidate_solutions)?.length ?? 0;
       say("agent", `已生成 ${n} 套候选方案（含框图与接口预检，见右侧）。两套方案的取舍不同，请对比后人工确认一套 —— 这是硬性流程，方案不确认无法进入 BOM 和代码。`);
       if (projectId) await advanceStage("SOLUTION_CANDIDATES");
-    } else say("agent", "生成失败：" + (r.message || "") + "\n\n可尝试：① 减少已选用模块数量（当前会全部纳入考虑）；② 精简需求清单后重试；③ 若反复失败，检查 Vercel 日志中 LLM 调用的报错。");
+    } else say("agent", "生成失败：" + (r.message || "") + "\n\n说明：方案生成会参考模块库中最相关的若干模块（按认证等级排序），并非只用你选用的那几个。\n可尝试：① 直接重试（两套方案独立生成，重试常能补齐）；② 精简或合并需求条目；③ 若反复失败，检查 Vercel 日志中 LLM 调用报错。");
   }
 
   async function approveSolution(sol: any) {

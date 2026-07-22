@@ -125,8 +125,28 @@ export async function loadModuleIndex(limit = 200): Promise<Record<string, any>>
 }
 
 /** 给 LLM 的精简模块目录（控制 token） */
-export function moduleCatalogForLlm(index: Record<string, any>): string {
-  return Object.values(index)
+/** 模块目录 → 提示词文本。
+ *  库大了会挤占输出预算导致截断，因此按相关性裁剪：
+ *  优先模块置顶，其余按认证等级排序，超过 limit 条则截断并注明。 */
+export function moduleCatalogForLlm(
+  index: Record<string, any>,
+  opts: { preferred?: string[]; limit?: number } = {}
+): string {
+  const limit = opts.limit ?? 40;
+  const CERT_RANK: Record<string, number> = {
+    COMPETITION_READY: 0, BENCHMARKED: 1, FUNCTION_TESTED: 2,
+    POWER_TESTED: 3, DOCUMENTED: 4, DRAFT: 5, DEPRECATED: 9,
+  };
+  const preferred = new Set(opts.preferred || []);
+  const all = Object.values(index) as any[];
+  const sorted = [...all].sort((a, b) => {
+    const pa = preferred.has(a.id) ? 0 : 1, pb = preferred.has(b.id) ? 0 : 1;
+    if (pa !== pb) return pa - pb;
+    return (CERT_RANK[a.certification_status] ?? 6) - (CERT_RANK[b.certification_status] ?? 6);
+  });
+  const shown = sorted.slice(0, limit);
+  const omitted = all.length - shown.length;
+  const body = shown
     .map((m: any) => {
       const ifaces = (m.interfaces || [])
         .map((i: any) => `${i.name}:${i.interface_type}@${i.voltage_level ?? "?"}V`)
@@ -137,4 +157,5 @@ export function moduleCatalogForLlm(index: Record<string, any>): string {
       return `- id=${m.id} | ${m.name} | ${m.category} | 芯片:${m.main_chip ?? "?"} | 接口:[${ifaces}] | ${power} | 认证:${m.certification_status}`;
     })
     .join("\n");
+  return omitted > 0 ? `${body}\n（另有 ${omitted} 个模块未列出，如需其他器件可将 module_id 留空并在 name 中说明）` : body;
 }
