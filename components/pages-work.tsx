@@ -8,6 +8,12 @@ const PROC_STATUS = ["待采购", "已下单", "已到货", "库存借用", "自
 
 export function BomPage({ ctx }: { ctx: any }) {
   const items: any[] = ctx.bom?.items || [];
+  const [genErr, setGenErr] = useState("");
+  async function genFromSolution() {
+    setGenErr("");
+    const r = await ctx.runBomFromSolution();
+    if (r && !r.ok) setGenErr(r.message || "生成失败");
+  }
   // 本地工作台状态：库存数 / 采购状态（叠加在 BOM 之上，导出时合并）
   const [local, setLocal] = useState<Record<string, { stock: number; status: string }>>({});
   const [group, setGroup] = useState<string>("all");
@@ -61,10 +67,11 @@ export function BomPage({ ctx }: { ctx: any }) {
           : "尚未确认主方案 —— 建议先到「方案生成」页采用一套方案，这样 BOM 能直接按方案功能块生成。"}
       </p>
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-        <button className="btn sm" disabled={ctx.busy || !ctx.chosenSolution} onClick={ctx.runBomFromSolution}>从已确认方案生成</button>
+        <button className="btn sm" disabled={ctx.busy || !ctx.chosenSolution} onClick={genFromSolution}>从已确认方案生成</button>
         <BomPaste ctx={ctx} />
       </div>
       {!ctx.chosenSolution && <p className="hint" style={{ marginTop: 8 }}>（从方案生成需要先在「方案生成」页确认一套方案）</p>}
+      {genErr && <div className="issue blocker" style={{ marginTop: 10, display: "block" }}>生成失败：{genErr}</div>}
     </div>
   );
 
@@ -76,7 +83,7 @@ export function BomPage({ ctx }: { ctx: any }) {
         <span><b style={{ color: shortage ? "var(--red)" : "var(--ok)" }}>{shortage}</b> 行缺料</span>
         <span><b>{items.filter((i) => i.needs_review).length}</b> 行需人工确认</span>
         <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <button className="btn ghost sm" disabled={ctx.busy} onClick={ctx.runBomFromSolution}>重新生成</button>
+          <button className="btn ghost sm" disabled={ctx.busy} onClick={genFromSolution}>重新生成</button>
           <button className="btn ghost sm" onClick={exportCsv}>⬇ 导出 Excel (CSV)</button>
           <button className="btn sm" onClick={syncEzplm}>同步到 ezPLM</button>
         </span>

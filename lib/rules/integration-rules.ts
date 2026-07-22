@@ -79,21 +79,34 @@ export function checkIntegration(
     }
   }
 
-  // ---- 2. 引脚冲突：同一模块同一引脚被多个连接占用 ----
-  const pinUse = new Map<string, string[]>();
+  // ---- 2. 引脚冲突：区分「驱动扇出」与「多源冲突」 ----
+  // 一个输出驱动多个输入（同一 from 出现多次）= 扇出，电路上通常合法 → 警告核对驱动能力
+  // 多个连接汇入同一输入（同一 to 出现多次）= 多个源抢一个引脚 → 阻断
+  // I2C/CAN/RS485 总线端点豁免
+  const asDriver = new Map<string, string[]>();
+  const asReceiver = new Map<string, string[]>();
   for (const conn of solution.connections || []) {
-    for (const end of [conn.from, conn.to]) {
-      const key = end.trim();
-      pinUse.set(key, [...(pinUse.get(key) || []), `${conn.from}→${conn.to}`]);
-    }
+    const label = `${conn.from}→${conn.to}`;
+    asDriver.set(conn.from.trim(), [...(asDriver.get(conn.from.trim()) || []), label]);
+    asReceiver.set(conn.to.trim(), [...(asReceiver.get(conn.to.trim()) || []), label]);
   }
-  for (const [pin, uses] of pinUse) {
-    if (uses.length > 1 && !/SDA|SCL|CAN|RS485/i.test(pin)) {
-      // I2C/CAN/RS485 是总线，允许多挂载
+  const isBus = (pin: string) => /SDA|SCL|CAN|RS485/i.test(pin);
+  for (const [pin, uses] of asReceiver) {
+    if (uses.length > 1 && !isBus(pin)) {
       issues.push({
         severity: "blocker",
         rule: "PIN_CONFLICT",
-        message: `引脚 ${pin} 被 ${uses.length} 条连接占用：${uses.join("；")}`,
+        message: `输入端 ${pin} 被 ${uses.length} 个信号源同时驱动：${uses.join("；")} —— 多源冲突会导致信号打架，需加选择开关/多路复用或改用不同引脚`,
+        where: pin,
+      });
+    }
+  }
+  for (const [pin, uses] of asDriver) {
+    if (uses.length > 1 && !isBus(pin)) {
+      issues.push({
+        severity: "warning",
+        rule: "PIN_FANOUT",
+        message: `输出端 ${pin} 扇出驱动 ${uses.length} 路：${uses.join("；")} —— 电路上通常合法，请核对驱动能力与负载阻抗`,
         where: pin,
       });
     }

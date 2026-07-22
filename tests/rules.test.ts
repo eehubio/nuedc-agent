@@ -57,7 +57,7 @@ describe("接口规则引擎", () => {
     expect(hit?.message).toContain("1000");
   });
 
-  it("I2C/SDA 总线端点豁免；普通引脚被两条连接占用 → 冲突", () => {
+  it("多个源驱动同一输入 → 阻断；I2C 总线豁免", () => {
     const r = checkIntegration(baseSol({
       connections: [
         { from: "SENSOR1.SDA", to: "MCU.SDA", protocol: "I2C", voltage_from: 3.3, voltage_to: 3.3 },
@@ -67,8 +67,21 @@ describe("接口规则引擎", () => {
       ],
     }) as any, modIndex);
     const pinIssues = r.issues.filter((i) => i.rule === "PIN_CONFLICT");
-    expect(pinIssues.some((i) => i.where.includes("SDA"))).toBe(false);  // 总线豁免
-    expect(pinIssues.some((i) => i.where.includes("PC1"))).toBe(true);   // 普通引脚冲突
+    expect(pinIssues.some((i) => i.where.includes("SDA"))).toBe(false);   // 总线豁免
+    expect(pinIssues.some((i) => i.where.includes("PC1") && i.severity === "blocker")).toBe(true);  // 两个源抢 MCU.PC1 输入 → 阻断
+  });
+
+  it("一个输出扇出驱动多个输入 → 警告不阻断（模拟信号分路是正常做法）", () => {
+    const r = checkIntegration(baseSol({
+      connections: [
+        { from: "B2.OUT", to: "B3.IN", protocol: "Analog", voltage_from: 2.5, voltage_to: 2.5 },
+        { from: "B2.OUT", to: "B4.IN", protocol: "Analog", voltage_from: 2.5, voltage_to: 2.5 },
+      ],
+    }) as any, modIndex);
+    expect(r.issues.filter((i) => i.rule === "PIN_CONFLICT")).toHaveLength(0);
+    const fanout = r.issues.find((i) => i.rule === "PIN_FANOUT");
+    expect(fanout?.severity).toBe("warning");
+    expect(r.passed).toBe(true);   // 仅警告不拦截代码生成
   });
 });
 
