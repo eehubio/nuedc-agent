@@ -20,6 +20,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  try {
   await ensureSchema();
   const body = await req.json();
   const { owner, isNew } = resolveOwner(req);
@@ -29,4 +30,8 @@ export async function POST(req: NextRequest) {
     args: [id, body.name || "未命名电赛项目", body.problem_text || null, body.ezplm_project_id || null, owner],
   });
   return withOwnerCookie(NextResponse.json({ project_id: id }, { status: 201 }), owner, isNew);
+  } catch (e: any) {
+    // 数据库不可用等基础故障：返回结构化错误，避免空响应让前端与压测无从判断
+    return NextResponse.json({ error: `服务暂时不可用：${String(e?.message || e).slice(0, 200)}` }, { status: 503 });
+  }
 }

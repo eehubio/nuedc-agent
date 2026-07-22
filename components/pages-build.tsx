@@ -983,8 +983,28 @@ function ProblemPicker({ ctx }: { ctx: any }) {
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [official, setOfficial] = useState<any[]>([]);
   const problems = PAST_PROBLEMS[year] || [];
   const picked = problems.find((p) => p.code === code);
+
+  // 官方已发布题目：采用后直接得到结构化需求，零模型调用
+  useEffect(() => {
+    fetch("/api/problems").then((r) => r.json()).then((d) => setOfficial(d.problems || [])).catch(() => {});
+  }, []);
+
+  async function adoptOfficial(problemId: string) {
+    setBusy(true); setMsg("正在载入官方题目…");
+    const pid = await ctx.ensureProjectForProblem?.();
+    const r = await fetch(`/api/projects/${pid}/adopt-problem`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ problem_id: problemId }),
+    }).then((x) => x.json()).catch(() => null);
+    setBusy(false);
+    if (r?.ok) {
+      setMsg(`已载入官方题目：${r.requirements} 条需求、${r.scoring_items} 个评分项（未消耗模型调用）`);
+      ctx.reloadProject?.(pid);
+    } else setMsg(r?.error || "载入失败");
+  }
 
   async function onPdf(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -1008,6 +1028,21 @@ function ProblemPicker({ ctx }: { ctx: any }) {
   return (
     <div className="card" style={{ marginBottom: 12 }}>
       <h3>选择赛题</h3>
+      {official.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <p className="hint" style={{ margin: "0 0 6px" }}>
+            ✅ 官方标准题目（已由工作人员解析并复核，选用后直接得到结构化需求与评分项，无需等待 AI 解析）
+          </p>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {official.map((p) => (
+              <button key={p.problem_id} className="btn ghost sm" disabled={busy}
+                onClick={() => adoptOfficial(p.problem_id)}>
+                {p.year} {p.code} · {p.title}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <select value={year} onChange={(e) => { setYear(e.target.value); setCode(""); }}
           style={{ padding: 7, borderRadius: 8, border: "1px solid var(--line)" }}>

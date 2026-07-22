@@ -275,6 +275,53 @@ CREATE INDEX IF NOT EXISTS idx_tasks_queue ON agent_tasks(status, priority, crea
 CREATE INDEX IF NOT EXISTS idx_tasks_hash ON agent_tasks(input_hash) WHERE input_hash IS NOT NULL;
 `,
   },
+  {
+    id: 12,
+    name: "problem_center",
+    sql: `
+CREATE TABLE IF NOT EXISTS official_problems (
+  problem_id TEXT PRIMARY KEY,
+  year INTEGER NOT NULL,
+  code TEXT NOT NULL,
+  title TEXT NOT NULL,
+  group_name TEXT,
+  status TEXT DEFAULT 'draft',
+  problem_version INTEGER DEFAULT 1,
+  source_pdf_hash TEXT,
+  raw_text TEXT,
+  requirements TEXT,
+  scoring_items TEXT,
+  notes TEXT,
+  report_requirements TEXT,
+  created_by TEXT,
+  published_by TEXT,
+  published_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_problems_year ON official_problems(year, code);
+CREATE INDEX IF NOT EXISTS idx_problems_status ON official_problems(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_problems_pdf ON official_problems(source_pdf_hash) WHERE source_pdf_hash IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS problem_review_diffs (
+  id BIGSERIAL PRIMARY KEY,
+  problem_id TEXT NOT NULL,
+  field_path TEXT NOT NULL,
+  provider_a TEXT,
+  provider_b TEXT,
+  value_a TEXT,
+  value_b TEXT,
+  severity TEXT DEFAULT 'info',
+  resolved INTEGER DEFAULT 0,
+  resolution TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_diffs_problem ON problem_review_diffs(problem_id, resolved);
+
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS problem_id TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS problem_version INTEGER;
+`,
+  },
 ];
 
 let applied = false;

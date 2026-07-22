@@ -227,3 +227,87 @@ describe("上下文压缩（降本核心）", () => {
     expect(picked[0].id).toBe("m1");
   });
 });
+
+describe("赛题中心：官方题目只解析一次", () => {
+  it("同一 PDF 哈希唯一，重复上传返回既有题目", async () => {
+    const { pdfHash } = await import("../lib/problem-center");
+    const a = pdfHash("JVBERi0xLjQKJeLjz9M...");
+    expect(pdfHash("JVBERi0xLjQKJeLjz9M...")).toBe(a);
+    expect(pdfHash("different")).not.toBe(a);
+    const fs = await import("node:fs");
+    const mig = fs.readFileSync("lib/migrations.ts", "utf8");
+    expect(mig).toContain("idx_problems_pdf");           // 唯一索引防重复解析
+    expect(mig).toContain("source_pdf_hash");
+  });
+
+  it("项目采用官方题目的接口不调用任何模型", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("app/api/projects/[id]/adopt-problem/route.ts", "utf8");
+    expect(src).not.toMatch(/modelGateway|llmJson|llmComplete/);
+    expect(src).toContain("llm_calls: 0");
+  });
+
+  it("双模复核：关键差异（指标/分值）标记为 critical", async () => {
+    const { diffExtractions } = await import("../lib/problem-center");
+    const a = {
+      requirements: [{ id: "R1", description: "输出电压可调", target: 10, unit: "V", tolerance: "±1%" }],
+      scoring_items: [{ item: "幅度测量", points: 30 }],
+    };
+    const b = {
+      requirements: [{ id: "R1", description: "输出电压可调", target: 12, unit: "V", tolerance: "±1%" }],
+      scoring_items: [{ item: "幅度测量", points: 20 }],
+    };
+    const diffs = diffExtractions(a as any, b as any);
+    const critical = diffs.filter((d) => d.severity === "critical");
+    expect(critical.length).toBe(2);                       // 指标不一致 + 分值不一致
+    expect(critical.some((d) => d.field_path.includes("target"))).toBe(true);
+    expect(critical.some((d) => d.field_path.includes("points"))).toBe(true);
+  });
+
+  it("完全一致的两次提取不产生差异", async () => {
+    const { diffExtractions } = await import("../lib/problem-center");
+    const x = { requirements: [{ id: "R1", description: "同样的描述", target: 5, unit: "V" }], scoring_items: [{ item: "a", points: 10 }] };
+    expect(diffExtractions(x as any, JSON.parse(JSON.stringify(x)))).toHaveLength(0);
+  });
+
+  it("双模复核只用于后台任务，普通用户 Agent 不默认双模", async () => {
+    const fs = await import("node:fs");
+    const staff = fs.readFileSync("app/api/problems/[id]/extract/route.ts", "utf8");
+    expect(staff).toContain("dual_review");
+    for (const f of ["lib/agents/engineering.ts", "lib/agents/planning.ts", "lib/agents/delivery.ts"]) {
+      expect(fs.readFileSync(f, "utf8")).not.toContain("dual_review");
+    }
+  });
+});
+
+describe("压测脚本安全默认", () => {
+  it("默认走 mock，真实模型需显式 --real", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("scripts/load-test.mts", "utf8");
+    expect(src).toContain('args.includes("--real")');
+    expect(src).toContain("ALLOW_MOCK_ASSUMED");
+    expect(src).toContain("会产生真实模型费用");
+  });
+});
+
+describe("基础故障不返回空响应（压测发现）", () => {
+  it("数据库不可用时创建项目返回结构化 503，而非崩溃或空体", async () => {
+    const saved = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    try {
+      vi.resetModules();
+      const mod: any = await import("../app/api/projects/route");
+      const req: any = new Request("http://x/api/projects", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "t" }),
+      });
+      req.cookies = { get: () => undefined };
+      const res = await mod.POST(req);
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.error).toBeTruthy();
+      expect(String(body.error)).toContain("服务暂时不可用");
+    } finally {
+      if (saved) process.env.DATABASE_URL = saved;
+    }
+  });
+});

@@ -301,6 +301,25 @@ export default function Platform({ embed }: { embed: boolean }) {
     say("agent", `已切换到备用方案 ${backupSolution.solution_id}。原主方案转为备用。`);
   }
 
+  /** 为采用官方题目准备项目（无项目时新建），返回 projectId */
+  async function ensureProjectForProblem(): Promise<string | null> {
+    if (projectId) return projectId;
+    const r = await api("/api/projects", { method: "POST", body: JSON.stringify({ name: "电赛项目" }) });
+    if (r.project_id) { setProjectId(r.project_id); reloadProjects(); return r.project_id; }
+    return null;
+  }
+
+  /** 重新载入项目产物（采用官方题目后刷新需求清单） */
+  async function reloadProject(pid?: string | null) {
+    const id = pid || projectId;
+    if (!id) return;
+    const d = await api(`/api/projects/${id}`);
+    const L: Record<string, any> = {};
+    for (const a of d.latest || []) L[a.type] = a;
+    if (L.requirements) setRequirements(L.requirements.content);
+    if (d.project?.stage) setStage(String(d.project.stage));
+  }
+
   // 框图节点手动摆位持久化（随方案产物一起存）
   async function saveLayout(solutionId: string, layout: Record<string, { x: number; y: number }>) {
     const apply = (sol: any) => (sol?.solution_id === solutionId ? { ...sol, layout } : sol);
@@ -511,6 +530,7 @@ export default function Platform({ embed }: { embed: boolean }) {
     runBomFromSolution, runBomFromText, runCode, runDebug, runReport, startFromDirection,
     updateRequirement, setReqStatus, confirmAllExtracted, addRequirement,
     replaceBlock, markBackup, swapToBackup, runTestPlan, runScore, runVerify, updatePowerRail, saveLayout,
+    ensureProjectForProblem, reloadProject,
     setReport, setPage, advanceStage,
   };
 
