@@ -337,7 +337,7 @@ export default function Platform({ embed }: { embed: boolean }) {
         ? `已追加备选方案（现有 ${list.length} 套），可对比后选定主方案。`
         : "方案已生成（含框图与接口预检）。请核对后点「采用为主方案」；如需对比论证，可再生成一套备选。");
       if (projectId) await advanceStage("SOLUTION_CANDIDATES");
-    } else say("agent", "生成失败：" + (r.message || "") + "\n\n说明：方案生成会参考模块库中最相关的若干模块（按认证等级排序），并非只用你选用的那几个。\n可尝试：① 直接重试；② 精简或合并需求条目；③ 若反复失败，检查 Vercel 日志中 LLM 调用报错。");
+    } else say("agent", "生成失败：" + (r.message || "") + "\n\n🔍 诊断建议：打开 /api/diag?full=1 可直接查看 LLM 链路状态（Key、连通性、JSON 生成能力），会明确指出坏在哪一环。");
   }
 
   async function approveSolution(sol: any) {

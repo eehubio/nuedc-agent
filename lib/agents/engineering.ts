@@ -35,18 +35,63 @@ ${catalog || "（模块库为空，允许方案使用通用模块名，module_id
 
   const userCtx = `结构化需求：\n${JSON.stringify(requirements).slice(0, 6000)}\n补充约束：${input.constraints || "无"}\n用户已选用的优先模块：${JSON.stringify(input.preferred_modules || [])}`;
 
-  async function genOne(id: string, flavor: string) {
-    return llmJson<{ solution: SolutionProposal }>({
-      system: `${SHARED_RULES}\n\n本次只生成【一套】方案，solution_id 固定为 "${id}"，技术路线取向：${flavor}。
-只输出 {"solution": {...}} 一个对象。`,
-      messages: [{ role: "user", content: userCtx }],
-      maxTokens: 10240,
-      temperature: 0.5,
-    }).then((r) => r.solution).catch(() => null);
+  // 容错解析：模型可能返回 {solution:{...}}、直接 {...}、或把 blocks 叫别的名字
+  function normalizeSolution(raw: any, id: string): SolutionProposal | null {
+    if (!raw || typeof raw !== "object") return null;
+    const s: any = raw.solution || raw.candidate_solution ||
+      (Array.isArray(raw.candidate_solutions) ? raw.candidate_solutions[0] : null) ||
+      (Array.isArray(raw.solutions) ? raw.solutions[0] : null) || raw;
+    if (!s || typeof s !== "object") return null;
+    // 功能块的常见别名
+    const blocks = s.blocks || s.modules || s.components || s.function_blocks || s.block_diagram || [];
+    if (!Array.isArray(blocks) || !blocks.length) return null;
+    return {
+      ...s,
+      solution_id: s.solution_id || s.id || id,
+      name: s.name || s.title || `方案 ${id}`,
+      summary: s.summary || s.description || "",
+      blocks: blocks.map((b: any, i: number) => ({
+        block_id: b.block_id || b.id || `B${i + 1}`,
+        name: b.name || b.title || `模块${i + 1}`,
+        module_id: b.module_id || b.moduleId || "",
+        role: b.role || b.type || "",
+        covers_requirements: b.covers_requirements || b.requirements || [],
+      })),
+      connections: s.connections || s.links || [],
+      power_tree: s.power_tree || s.power || [],
+      advantages: s.advantages || s.pros || [],
+      disadvantages: s.disadvantages || s.cons || [],
+      risk_level: s.risk_level || "medium",
+      implementation_hours: s.implementation_hours || 0,
+      uncovered_requirements: s.uncovered_requirements || [],
+    } as SolutionProposal;
   }
 
-  // 默认只生成 1 套方案：用户要的是一套能用的方案，不是做选择题。
-  // 想要备选时由前端传 variant（"稳妥"/"性能"）单独再生成一套，追加进列表。
+  let lastError = "";
+  async function genOne(id: string, flavor: string): Promise<SolutionProposal | null> {
+    try {
+      const raw = await llmJson<any>({
+        system: `${SHARED_RULES}\n\n本次只生成【一套】方案，solution_id 固定为 "${id}"，技术路线取向：${flavor}。
+输出格式（严格遵守，blocks 至少 4 项）：
+{"solution":{"solution_id":"${id}","name":"方案名","summary":"一句话概述","blocks":[{"block_id":"B1","name":"主控","module_id":"库中真实id或留空","role":"mcu","covers_requirements":["REQ-001"]}],"connections":[{"from":"A.TX","to":"B.RX","protocol":"UART","voltage_from":3.3,"voltage_to":3.3}],"power_tree":[{"rail":"3V3","voltage":3.3,"source":"LDO","loads":["B1"],"budget_ma":500}],"advantages":["..."],"disadvantages":["..."],"risk_level":"low","implementation_hours":40,"uncovered_requirements":[]}}`,
+        messages: [{ role: "user", content: userCtx }],
+        maxTokens: 10240,
+        temperature: 0.4,
+      });
+      const norm = normalizeSolution(raw, id);
+      if (!norm) {
+        lastError = `模型返回的结构缺少功能块（收到字段：${Object.keys(raw?.solution || raw || {}).slice(0, 8).join("/") || "空"}）`;
+      }
+      return norm;
+    } catch (e: any) {
+      // 关键：不再吞掉真实错误（finishReason / 配额 / 网络）
+      lastError = String(e?.message || e).slice(0, 300);
+      console.error("[solution_architect] 生成失败:", lastError);
+      return null;
+    }
+  }
+
+  // 默认只生成 1 套方案；备选由前端传 variant 单独追加
   const variant: string | undefined = input.variant;
   const existing: SolutionProposal[] = input.existing_solutions || [];
   const FLAVORS: Record<string, string> = {
@@ -54,7 +99,7 @@ ${catalog || "（模块库为空，允许方案使用通用模块名，module_id
     safe: "稳妥优先：成熟模块、实现风险低、调试链路短，确保四天三夜能完成",
     performance: "性能优先：更强算力或更高精度路径，允许更高实现难度",
   };
-  const nextId = `SOL-${String.fromCharCode(65 + existing.length)}`;   // SOL-A / SOL-B / SOL-C…
+  const nextId = `SOL-${String.fromCharCode(65 + existing.length)}`;
   const flavor = FLAVORS[variant || "balanced"] || FLAVORS.balanced;
   const avoid = existing.length
     ? `\n已有方案（本次必须给出实质不同的技术路线，不要重复）：${existing.map((e: any) => `${e.solution_id}=${e.name}`).join("；")}`
@@ -65,13 +110,13 @@ ${catalog || "（模块库为空，允许方案使用通用模块名，module_id
 
   // 结构校验：残缺方案不得当成功返回
   if (!rawSols.length) {
-    return { ok: false, output: null, message: "方案生成失败。可能是需求条目过多导致输出超限 —— 建议精简或合并需求后重试，或检查 LLM API 配额。" };
+    return { ok: false, output: null, message: `方案生成失败：${lastError || "未知原因"}` };
   }
   const usable = rawSols.filter(
     (sl: any) => sl?.solution_id && sl?.name && Array.isArray(sl.blocks) && sl.blocks.length
   );
   if (!usable.length) {
-    return { ok: false, output: null, message: "模型输出被截断，方案缺少功能块。建议减少已选用模块数量后重试。" };
+    return { ok: false, output: null, message: `方案结构不完整：${lastError || "缺少功能块"}` };
   }
   const truncation_note = undefined;
 

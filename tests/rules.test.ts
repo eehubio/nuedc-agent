@@ -330,3 +330,38 @@ describe("历年赛题库", () => {
     }
   });
 });
+
+describe("方案解析容错（字段别名）", () => {
+  // 复刻 normalizeSolution 的契约：这些形状都应被接受
+  function normalize(raw: any, id = "SOL-A") {
+    if (!raw || typeof raw !== "object") return null;
+    const s: any = raw.solution || raw.candidate_solution ||
+      (Array.isArray(raw.candidate_solutions) ? raw.candidate_solutions[0] : null) ||
+      (Array.isArray(raw.solutions) ? raw.solutions[0] : null) || raw;
+    const blocks = s?.blocks || s?.modules || s?.components || s?.function_blocks || [];
+    if (!Array.isArray(blocks) || !blocks.length) return null;
+    return { solution_id: s.solution_id || s.id || id, name: s.name || s.title || `方案 ${id}`, blocks };
+  }
+  it("接受 {solution:{...}} 包装", () => {
+    expect(normalize({ solution: { solution_id: "SOL-A", name: "x", blocks: [{ name: "主控" }] } })?.name).toBe("x");
+  });
+  it("接受裸对象（无包装）", () => {
+    expect(normalize({ solution_id: "SOL-A", name: "裸", blocks: [{ name: "主控" }] })?.name).toBe("裸");
+  });
+  it("接受 modules/components 作为功能块别名", () => {
+    expect(normalize({ solution: { name: "a", modules: [{ name: "m" }] } })?.blocks).toHaveLength(1);
+    expect(normalize({ components: [{ name: "c" }] })?.blocks).toHaveLength(1);
+  });
+  it("接受 candidate_solutions 数组（旧格式）", () => {
+    expect(normalize({ candidate_solutions: [{ name: "旧", blocks: [{ name: "b" }] }] })?.name).toBe("旧");
+  });
+  it("缺少 id/name 时用默认值补齐，不判失败", () => {
+    const r = normalize({ blocks: [{ name: "b" }] }, "SOL-B");
+    expect(r?.solution_id).toBe("SOL-B");
+    expect(r?.name).toBe("方案 SOL-B");
+  });
+  it("真正没有功能块才判失败", () => {
+    expect(normalize({ solution: { name: "空" } })).toBeNull();
+    expect(normalize(null)).toBeNull();
+  });
+});
