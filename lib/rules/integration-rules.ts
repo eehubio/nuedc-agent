@@ -33,7 +33,8 @@ export function checkIntegration(
     if (vf != null && vt != null) {
       // 5V 输出直接进 3.3V 非容忍输入
       if (vf > vt + 0.3) {
-        const toIface = findInterface(moduleIndex, conn.to);
+        const toIface = findInterfaceStructured(moduleIndex, solution.blocks || [], (conn as any).to_block_id, (conn as any).to_interface_id)
+          || findInterface(moduleIndex, conn.to, solution.blocks || []);
         const tolerant = toIface?.five_v_tolerant === true;
         if (vf >= 4.5 && vt <= 3.6 && !tolerant) {
           issues.push({
@@ -64,7 +65,8 @@ export function checkIntegration(
     // UART 波特率超出能力
     if (conn.protocol?.toUpperCase() === "UART") {
       const fromIface = findInterface(moduleIndex, conn.from);
-      const toIface = findInterface(moduleIndex, conn.to);
+      const toIface = findInterfaceStructured(moduleIndex, solution.blocks || [], (conn as any).to_block_id, (conn as any).to_interface_id)
+          || findInterface(moduleIndex, conn.to, solution.blocks || []);
       const baud = (conn as any).baudrate;
       for (const [iface, side] of [[fromIface, conn.from], [toIface, conn.to]] as const) {
         if (baud && iface?.max_baudrate && baud > iface.max_baudrate) {
@@ -112,6 +114,9 @@ export function checkIntegration(
     }
   }
 
+  // 功率类器件白名单：缺功耗数据时直接阻断（旧问题 2）
+  const POWER_HUNGRY = /motor|电机|servo|舵机|wireless|无线|camera|摄像|fpga|功率|amp|加热|heater|驱动/i;
+
   // ---- 3. 电源树：电流预算 ----
   for (const rail of solution.power_tree || []) {
     if (!rail.budget_ma) continue;
@@ -120,9 +125,21 @@ export function checkIntegration(
     for (const load of rail.loads || []) {
       const block = (solution.blocks || []).find((b) => b.block_id === load || b.name === load);
       const mod = block?.module_id ? moduleIndex[block.module_id] : null;
-      const ma = mod?.power?.peak_current_ma ?? mod?.power?.typical_current_ma ?? 0;
+      const known = mod?.power?.peak_current_ma ?? mod?.power?.typical_current_ma;
+      const ma = known ?? 0;
       demand += ma;
       if (ma) detail.push(`${block?.name}:${ma}mA`);
+      // 未知功耗不得静默按 0 计（旧问题 2）：否则三个未知模块会算出 0mA 然后"检查通过"
+      if (known == null && block) {
+        const label = `${mod?.id ?? ""} ${mod?.name ?? block.name} ${mod?.category ?? ""} ${block.role ?? ""}`;
+        const hungry = POWER_HUNGRY.test(label);
+        issues.push({
+          severity: hungry ? "blocker" : "warning",
+          rule: "POWER_DATA_MISSING",
+          message: `${mod?.name || block.name} 缺少功耗数据（典型/峰值电流均未录入），电源轨 ${rail.rail} 的预算无法核算${hungry ? "；该模块属功率类器件，必须实测补录后才能确认电源方案" : "，建议实测补录"}`,
+          where: rail.rail,
+        });
+      }
     }
     if (demand > rail.budget_ma) {
       issues.push({
@@ -160,10 +177,39 @@ export function checkIntegration(
   return { passed, issues, checked_connections: (solution.connections || []).length };
 }
 
-function findInterface(moduleIndex: Record<string, any>, endpoint: string) {
-  // endpoint 形如 "MSPM0.UART0_RX" —— 前缀匹配模块，后缀匹配接口名
+/** 端点 → 接口定义。
+ *  优先用结构化 ID（conn.from_block_id + from_interface_id，见旧问题 1），
+ *  没有结构化字段时才回退到字符串模糊匹配，且要求块前缀精确命中，避免同名模块串味。 */
+function findInterfaceStructured(
+  moduleIndex: Record<string, any>,
+  blocks: any[],
+  blockId?: string,
+  interfaceId?: string
+) {
+  if (!blockId || !interfaceId) return null;
+  const block = blocks.find((b) => b.block_id === blockId);
+  if (!block?.module_id) return null;
+  const mod = moduleIndex[block.module_id];
+  if (!mod) return null;
+  return (mod.interfaces || []).find(
+    (i: any) => String(i.name).toUpperCase() === String(interfaceId).toUpperCase()
+  ) || null;
+}
+
+function findInterface(moduleIndex: Record<string, any>, endpoint: string, blocks: any[] = []) {
   const [modKey, ...rest] = endpoint.split(".");
   const sig = rest.join(".");
+  if (!modKey) return null;
+  // 先按 block_id 精确定位（方案里的 B1/B2… 是唯一的）
+  const byBlock = blocks.find((b) => b.block_id?.toUpperCase() === modKey.toUpperCase());
+  if (byBlock?.module_id && moduleIndex[byBlock.module_id]) {
+    const mod = moduleIndex[byBlock.module_id];
+    const exact = (mod.interfaces || []).find((i: any) => String(i.name).toUpperCase() === sig.toUpperCase());
+    if (exact) return exact;
+    const partial = (mod.interfaces || []).find((i: any) => sig.toUpperCase().includes(String(i.name).toUpperCase()));
+    if (partial) return partial;
+  }
+  // 回退：模糊匹配（仅在没有结构化信息时使用）
   for (const [id, mod] of Object.entries(moduleIndex)) {
     if (id.includes(modKey.toLowerCase()) || (mod as any).name?.includes(modKey)) {
       for (const iface of (mod as any).interfaces || []) {

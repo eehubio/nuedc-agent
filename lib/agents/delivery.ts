@@ -1,5 +1,6 @@
 // 交付类 Agent：代码生成、LabSight 调试、报告生成 + 总控编排
-import { llmComplete, llmJson } from "../llm";
+import { llmComplete, llmJson, lastRepairApplied } from "../llm";
+import { codeFileSchema, parseArrayLoose } from "../agent-schemas";
 import { registerAgent, loadModuleIndex } from "./base";
 import type { SolutionProposal } from "../types";
 
@@ -46,17 +47,23 @@ registerAgent("code_generator", async (input, ctx) => {
     maxTokens: 8192,
   });
 
-  // 空文件不算成功：宁可失败重试，不能给用户一个空工程
-  const files = (out.files || []).filter((f) => f?.path && f?.content?.trim());
+  // 运行时校验 + 空文件不算成功
+  const { data: files, dropped } = parseArrayLoose(codeFileSchema, out.files);
   if (!files.length) {
     return { ok: false, output: null, message: "模型未生成任何代码文件（可能把全部 SDK 调用误判为不可生成）。请重试；反复出现请反馈。" };
   }
+  const codePartial = lastRepairApplied();
   return {
     ok: true,
     artifact_type: "code_bundle",
-    output: { ...out, files, verification_status: "GENERATED" },
+    output: {
+      ...out, files, verification_status: "GENERATED",
+      dropped_files: dropped, partial_output: codePartial, repair_applied: codePartial,
+    },
     human_review_required: true,
-    message: `已生成 ${files.length} 个文件（状态 GENERATED，编译通过前不得标记为可用）`,
+    message: `已生成 ${files.length} 个文件（状态 GENERATED，编译通过前不得标记为可用）` +
+      (codePartial ? "。⚠ 输出曾被截断修复，末尾文件可能不完整，请先运行静态验证" : "") +
+      (dropped ? `。已剔除 ${dropped} 个结构异常的文件` : ""),
   };
 });
 

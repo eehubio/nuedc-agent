@@ -128,6 +128,20 @@ ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 5;
 ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS max_attempts INTEGER DEFAULT 3;
 `,
   },
+  {
+    id: 8,
+    name: "llm_usage_tracking",
+    sql: `
+CREATE TABLE IF NOT EXISTS llm_usage (
+  id BIGSERIAL PRIMARY KEY,
+  owner TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  detail TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_usage_owner_kind ON llm_usage(owner, kind, created_at);
+`,
+  },
 ];
 
 let applied = false;

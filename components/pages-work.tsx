@@ -78,6 +78,14 @@ export function BomPage({ ctx }: { ctx: any }) {
   return (
     <>
       <StaleBanner ctx={ctx} types={["bom", "procurement_plan"]} label="物料清单" />
+      {ctx.bom?.partial_output && (
+        <div className="issue blocker" style={{ display: "block", marginBottom: 12 }}>
+          ⚠ <b>物料清单可能不完整</b>：本次输出曾被截断修复，末尾物料可能缺失。请对照方案功能块核对后再采购。
+        </div>
+      )}
+      {ctx.bom?.dropped_rows > 0 && (
+        <div className="issue warning" style={{ marginBottom: 12 }}>已剔除 {ctx.bom.dropped_rows} 行结构异常的数据</div>
+      )}
       <div className="statsbar" style={{ marginBottom: 14 }}>
         <span><b>{items.length}</b> 行物料</span>
         <span><b style={{ color: shortage ? "var(--red)" : "var(--ok)" }}>{shortage}</b> 行缺料</span>

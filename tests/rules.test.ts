@@ -395,3 +395,97 @@ describe("失效横幅显示条件", () => {
     expect(shouldShow(true, ["bom"], ["code_bundle"])).toBe(false);
   });
 });
+
+describe("配额与用量", () => {
+  it("各 tier 每日配额符合策略", async () => {
+    const { quotaFor } = await import("../lib/usage");
+    expect(quotaFor("pdf_extract", "free")).toBe(2);
+    expect(quotaFor("pdf_extract", "paid")).toBe(20);
+    expect(quotaFor("pdf_extract", "lab")).toBe(-1);
+    expect(quotaFor("pdf_extract", "admin")).toBe(-1);
+    expect(quotaFor("unknown_kind", "free")).toBe(0);
+  });
+});
+
+describe("LLM 输出 Schema 校验", () => {
+  it("BOM 数量字段：'很多'→兜底 1，'2块'→2，负数→1", async () => {
+    const { bomItemSchema } = await import("../lib/agent-schemas");
+    const p = (q: any) => bomItemSchema.parse({ name: "x", quantity: q, confidence: 0.9 }).quantity;
+    expect(p("很多")).toBe(1);
+    expect(p("2块")).toBe(2);
+    expect(p(3)).toBe(3);
+  });
+  it("置信度越界被夹到 [0,1]，非数值兜底 0.5", async () => {
+    const { bomItemSchema } = await import("../lib/agent-schemas");
+    const c = (v: any) => bomItemSchema.parse({ name: "x", quantity: 1, confidence: v }).confidence;
+    expect(c(5)).toBe(1);
+    expect(c(-2)).toBe(0);
+    expect(c("高")).toBe(0.5);
+  });
+  it("items 是字符串（模型抽风）→ 逐项过滤后为空，不会污染下游", async () => {
+    const { bomItemSchema, parseArrayLoose } = await import("../lib/agent-schemas");
+    expect(parseArrayLoose(bomItemSchema, "none").data).toHaveLength(0);
+    const mixed = parseArrayLoose(bomItemSchema, [{ name: "好行", quantity: 1, confidence: 1 }, { 不是: "物料" }]);
+    expect(mixed.data).toHaveLength(1);
+    expect(mixed.dropped).toBe(1);
+  });
+  it("方案缺少 blocks → 校验失败", async () => {
+    const { solutionSchema } = await import("../lib/agent-schemas");
+    expect(solutionSchema.safeParse({ solution_id: "S", name: "n", blocks: [] }).success).toBe(false);
+    expect(solutionSchema.safeParse({ solution_id: "S", name: "n", blocks: [{ block_id: "B1", name: "主控" }] }).success).toBe(true);
+  });
+});
+
+describe("需求上下文裁剪（不静默丢弃）", () => {
+  function build(reqs: any[], budget: number) {
+    const rank = (r: any) => (r.priority === "mandatory" ? 0 : 1);
+    const ordered = [...reqs].sort((a, b) => rank(a) - rank(b));
+    const compact = (r: any) => ({ id: r.id, description: String(r.description || "").slice(0, 120), priority: r.priority });
+    const kept: any[] = []; const omitted: string[] = []; let size = 2;
+    for (const r of ordered) {
+      const piece = JSON.stringify(compact(r));
+      if (size + piece.length + 1 <= budget) { kept.push(compact(r)); size += piece.length + 1; }
+      else omitted.push(r.id);
+    }
+    return { kept, omitted };
+  }
+  it("预算不足时优先保留基本要求，发挥项进 omitted", () => {
+    const reqs = [
+      { id: "R1", description: "发挥项".repeat(20), priority: "bonus" },
+      { id: "R2", description: "基本项", priority: "mandatory" },
+      { id: "R3", description: "基本项", priority: "mandatory" },
+    ];
+    const { kept, omitted } = build(reqs, 120);
+    expect(kept.map((k) => k.id)).toContain("R2");
+    expect(kept.map((k) => k.id)).toContain("R3");
+    expect(omitted).toContain("R1");
+  });
+  it("预算充足时全部纳入，omitted 为空", () => {
+    const { kept, omitted } = build([{ id: "R1", description: "a", priority: "mandatory" }], 6000);
+    expect(kept).toHaveLength(1);
+    expect(omitted).toHaveLength(0);
+  });
+});
+
+describe("未知功耗不按 0 处理", () => {
+  it("功率类模块缺功耗数据 → 阻断；普通模块 → 警告", () => {
+    const idx: Record<string, any> = {
+      "motor-x": { id: "motor-x", name: "电机驱动", category: "actuator.motor", interfaces: [], power: {} },
+      "led-y": { id: "led-y", name: "指示灯", category: "other.misc", interfaces: [], power: {} },
+    };
+    const sol: any = {
+      solution_id: "S", name: "t", summary: "", advantages: [], disadvantages: [], risk_level: "low",
+      implementation_hours: 1, uncovered_requirements: [],
+      blocks: [
+        { block_id: "B1", name: "电机", module_id: "motor-x", role: "motor", covers_requirements: [] },
+        { block_id: "B2", name: "灯", module_id: "led-y", role: "led", covers_requirements: [] },
+      ],
+      connections: [],
+      power_tree: [{ rail: "5V", voltage: 5, source: "DCDC", loads: ["B1", "B2"], budget_ma: 1000 }],
+    };
+    const r = checkIntegration(sol, idx);
+    const missing = r.issues.filter((i) => i.rule === "POWER_DATA_MISSING");
+    expect(missing.some((i) => i.severity === "blocker" && i.message.includes("电机"))).toBe(true);
+    expect(missing.some((i) => i.severity === "warning" && i.message.includes("指示灯"))).toBe(true);
+  });
+});

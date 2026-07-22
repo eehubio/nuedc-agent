@@ -79,7 +79,13 @@ export function repairTruncatedJson(text: string): string | null {
   return null;
 }
 
+/** 本次调用是否发生过截断修复 —— 由 llmJson 设置，供 Agent 读取后标记产物为 partial。
+ *  用模块级变量而非返回值，避免改动所有 Agent 的调用签名。 */
+let _lastRepairApplied = false;
+export function lastRepairApplied(): boolean { return _lastRepairApplied; }
+
 export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
+  _lastRepairApplied = false;
   const system = opts.system +
     "\n\n输出要求：只输出一个合法 JSON 对象，不要输出 Markdown 代码围栏、前言或解释文字。" +
     "\n务必控制篇幅：描述性字段简明扼要（每条不超过 60 字），确保 JSON 在 token 限额内完整闭合。";
@@ -96,7 +102,8 @@ export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
     if (repaired) {
       try {
         const parsed = JSON.parse(repaired) as T;
-        console.warn("[llmJson] 输出被截断，已修复并保留完整部分");
+        _lastRepairApplied = true;
+        console.warn("[llmJson] 输出被截断，已修复并保留完整部分（结果将标记为 partial）");
         return parsed;
       } catch { /* 落到重试 */ }
     }

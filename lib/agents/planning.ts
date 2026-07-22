@@ -23,7 +23,7 @@ registerAgent("problem_interpreter", async (input) => {
 2. 提取所有量化指标：尺寸、重量、电压、时间、精度、误差，写入 target 和 unit；允许误差写入 tolerance（如"±1%"）
 3. 每条需求编号 REQ-001 起，type ∈ functional|performance|constraint|bonus
 4. verification_method ∈ measurement|demonstration|inspection|analysis
-5. 逐条标注 source（引用赛题原文对应条目，尽量保留原文表述）
+5. 逐条标注 source：必须引用赛题原文对应表述（可截取关键句，不要改写）；若题面带【第N页】标记，把页码写入 source_page 字段
 5b. 每条需求 status 字段：确定无歧义的填 "AI_EXTRACTED"，题面表述含糊的填 "AMBIGUOUS"
 6. 不确定或有歧义的地方放入 ambiguities，不要擅自补全
 7. 识别系统输入（被测/被控对象、传感来源）与输出（执行、显示、通信）

@@ -152,8 +152,11 @@ export function SolutionPage({ ctx }: { ctx: any }) {
         <div style={{ display: "grid", gap: 14 }}>
           {ctx.requirements && <RequirementEditor ctx={ctx} />}
 
-          {ctx.solutions?.truncation_note && (
-            <div className="issue warning">⚠ {ctx.solutions.truncation_note}</div>
+          {ctx.solutions?.partial_output && (
+            <div className="issue blocker" style={{ display: "block" }}>
+              ⚠ <b>本次输出不完整</b>（曾被截断并自动修复）：{ctx.solutions.truncation_note || "方案可能缺少部分连线或功能块。"}
+              <br />确认为主方案前请逐项核对，或直接重新生成。
+            </div>
           )}
           {(ctx.solutions?.solutions || ctx.solutions?.candidate_solutions || []).map((sol: any) => {
             const pre = sol.integration_precheck;
@@ -176,6 +179,16 @@ export function SolutionPage({ ctx }: { ctx: any }) {
                 </div>
                 {sol.uncovered_requirements?.length > 0 && (
                   <div className="issue warning">⚠ 未覆盖需求：{sol.uncovered_requirements.join("、")}</div>
+                )}
+                {sol.coverage && (
+                  <p className="hint" style={{ margin: "4px 0" }}>
+                    需求覆盖 {sol.coverage.covered}/{sol.coverage.total}
+                    {sol.coverage.omitted_from_context?.length > 0 && (
+                      <span className="chip gold" style={{ marginLeft: 6 }}>
+                        {sol.coverage.omitted_from_context.length} 条因长度未纳入生成上下文
+                      </span>
+                    )}
+                  </p>
                 )}
                 <BlockList sol={sol} ctx={ctx} />
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center", marginTop: 8 }}>
@@ -319,6 +332,11 @@ export function CodePage({ ctx }: { ctx: any }) {
   return (
     <>
     <StaleBanner ctx={ctx} types={["code_bundle", "code_verification"]} label="生成的代码" exists={!!ctx.codeBundle?.files?.length} />
+    {ctx.codeBundle?.partial_output && (
+      <div className="issue blocker" style={{ display: "block", marginBottom: 12 }}>
+        ⚠ <b>代码可能不完整</b>：输出曾被截断修复，末尾文件可能缺少收尾。请先点「静态验证」确认括号配平后再使用。
+      </div>
+    )}
     <div className="code-wrap">
       <div className="card">
         <h3>工程文件</h3>

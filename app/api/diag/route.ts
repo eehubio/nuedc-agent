@@ -8,6 +8,27 @@ export const maxDuration = 120;
  *  GET /api/diag —— 环境变量与连通性
  *  GET /api/diag?full=1 —— 额外跑一次真实 JSON 生成（消耗少量 token） */
 export async function GET(req: NextRequest) {
+  // 鉴权（诊断 P0-1）：完整诊断会暴露 Provider/模型/错误详情，且 ?full/?solution 真实消耗 token。
+  // 公开访问只返回三项 ok/fail；细节与耗费型自检仅 admin（cookie 会话或 X-Api-Key）。
+  const { resolveTier } = await import("@/lib/auth");
+  const isAdmin = resolveTier(req) === "admin";
+  if (!isAdmin) {
+    const sp = new URL(req.url).searchParams;
+    if (sp.get("full") || sp.get("solution")) {
+      return NextResponse.json({ error: "完整诊断需要管理员身份（先在 /admin 登录，或带 X-Api-Key）" }, { status: 403 });
+    }
+    let llmOk = false;
+    try {
+      await llmComplete({ system: "回复：ok", messages: [{ role: "user", content: "ping" }], maxTokens: 8 });
+      llmOk = true;
+    } catch { /* 保持 false */ }
+    return NextResponse.json({
+      service: "ok",
+      database: process.env.DATABASE_URL ? "ok" : "missing",
+      llm: llmOk ? "ok" : "fail",
+    });
+  }
+
   const provider = process.env.LLM_PROVIDER || "anthropic";
   const model = provider === "gemini" ? (process.env.GEMINI_MODEL || "gemini-2.0-flash")
     : provider === "openai" ? (process.env.OPENAI_MODEL || "gpt-4o-mini")

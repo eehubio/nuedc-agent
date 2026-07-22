@@ -1,6 +1,7 @@
 // 工程类 Agent：方案架构、接口集成检查、BOM 整理、备料规划
-import { llmJson } from "../llm";
+import { llmJson, lastRepairApplied } from "../llm";
 import { registerAgent, loadModuleIndex, moduleCatalogForLlm } from "./base";
+import { solutionSchema, bomOutputSchema, parseArrayLoose, bomItemSchema } from "../agent-schemas";
 import { checkIntegration } from "../rules/integration-rules";
 import { applyQuantityRules, flagForReview } from "../rules/procurement-rules";
 import type { SolutionProposal, BomItem } from "../types";
@@ -18,14 +19,15 @@ registerAgent("solution_architect", async (input) => {
   if (unconfirmed.length && !input.force) {
     return { ok: false, output: null, message: `尚有 ${unconfirmed.length} 条基本要求未确认（${unconfirmed.slice(0, 5).map((r) => r.id).join("、")}…）。请在需求清单中逐条确认后再生成正式方案。` };
   }
-  requirements.requirements = reqList.filter((r) => r.status !== "REJECTED");
+  // 不修改调用方传入的对象（旧问题 3）：用副本，避免前端状态被意外改写
+  const requirementsForGen = { ...requirements, requirements: reqList.filter((r) => r.status !== "REJECTED") };
 
   // ---- 分次生成：两套方案各一次调用，单次输出量减半，从根本上避免截断 ----
   // （一次性生成两套方案 + 框图 + 连线 + 电源树，即使 12k token 也常被截断）
   const SHARED_RULES = `你是电赛系统方案架构师。要求：
 1. 优先使用模块目录中的模块（引用真实 module_id）；目录没有的写 module_id 为空并在 name 里说明
 2. 每个 block 标注 covers_requirements（引用 REQ id）；未覆盖的需求列入 uncovered_requirements
-3. connections 写清接口端点（形如 "K230.UART1_TX" → "MSPM0.UART0_RX"）、protocol、voltage_from/voltage_to
+3. connections 必须同时给出结构化字段与显示字符串：from_block_id/from_interface_id/to_block_id/to_interface_id（引用 blocks 里的 block_id 与模块真实接口名）以及 from/to（形如 "B1.UART0_TX"）、protocol、voltage_from/voltage_to
 4. power_tree 写清每条电源轨的电压、来源、负载和电流预算 budget_ma
 5. 给出优缺点、风险等级、预计实现小时数
 6. 四天三夜可完成性是第一约束
@@ -33,7 +35,32 @@ registerAgent("solution_architect", async (input) => {
 模块目录：
 ${catalog || "（模块库为空，允许方案使用通用模块名，module_id 留空）"}`;
 
-  const userCtx = `结构化需求：\n${JSON.stringify(requirements).slice(0, 6000)}\n补充约束：${input.constraints || "无"}\n用户已选用的优先模块：${JSON.stringify(input.preferred_modules || [])}`;
+  // 需求裁剪（P0-5）：不按字符硬切（会静默丢掉后半段），改为按优先级逐条纳入并明确报告省略项
+  function buildRequirementContext(reqs: any[], budget = 6000) {
+    const rank = (r: any) => (r.priority === "mandatory" ? 0 : 1);
+    const ordered = [...reqs].sort((a, b) => rank(a) - rank(b));
+    const compact = (r: any) => ({
+      id: r.id, description: String(r.description || "").slice(0, 120),
+      target: r.target ?? undefined, unit: r.unit ?? undefined, tolerance: r.tolerance ?? undefined,
+      priority: r.priority,
+    });
+    const kept: any[] = [];
+    const omitted: string[] = [];
+    let size = 2;
+    for (const r of ordered) {
+      const piece = JSON.stringify(compact(r));
+      if (size + piece.length + 1 <= budget) { kept.push(compact(r)); size += piece.length + 1; }
+      else omitted.push(r.id);
+    }
+    return { kept, omitted };
+  }
+  const reqAll = (requirementsForGen.requirements || []) as any[];
+  const { kept: reqKept, omitted: reqOmitted } = buildRequirementContext(reqAll);
+  const userCtx = `结构化需求（共 ${reqAll.length} 条${reqOmitted.length ? `，因长度限制本次仅纳入 ${reqKept.length} 条` : ""}）：
+${JSON.stringify(reqKept)}
+${reqOmitted.length ? `注意：以下需求未纳入本次上下文，请在 uncovered_requirements 中原样列出它们：${reqOmitted.join("、")}` : ""}
+补充约束：${input.constraints || "无"}
+用户已选用的优先模块：${JSON.stringify(input.preferred_modules || [])}`;
 
   // 容错解析：模型可能返回 {solution:{...}}、直接 {...}、或把 blocks 叫别的名字
   function normalizeSolution(raw: any, id: string): SolutionProposal | null {
@@ -73,12 +100,18 @@ ${catalog || "（模块库为空，允许方案使用通用模块名，module_id
       const raw = await llmJson<any>({
         system: `${SHARED_RULES}\n\n本次只生成【一套】方案，solution_id 固定为 "${id}"，技术路线取向：${flavor}。
 输出格式（严格遵守，blocks 至少 4 项）：
-{"solution":{"solution_id":"${id}","name":"方案名","summary":"一句话概述","blocks":[{"block_id":"B1","name":"主控","module_id":"库中真实id或留空","role":"mcu","covers_requirements":["REQ-001"]}],"connections":[{"from":"A.TX","to":"B.RX","protocol":"UART","voltage_from":3.3,"voltage_to":3.3}],"power_tree":[{"rail":"3V3","voltage":3.3,"source":"LDO","loads":["B1"],"budget_ma":500}],"advantages":["..."],"disadvantages":["..."],"risk_level":"low","implementation_hours":40,"uncovered_requirements":[]}}`,
+{"solution":{"solution_id":"${id}","name":"方案名","summary":"一句话概述","blocks":[{"block_id":"B1","name":"主控","module_id":"库中真实id或留空","role":"mcu","covers_requirements":["REQ-001"]}],"connections":[{"from_block_id":"B1","from_interface_id":"UART0_TX","to_block_id":"B2","to_interface_id":"RX","from":"B1.UART0_TX","to":"B2.RX","protocol":"UART","voltage_from":3.3,"voltage_to":3.3}],"power_tree":[{"rail":"3V3","voltage":3.3,"source":"LDO","loads":["B1"],"budget_ma":500}],"advantages":["..."],"disadvantages":["..."],"risk_level":"low","implementation_hours":40,"uncovered_requirements":[]}}`,
         messages: [{ role: "user", content: userCtx }],
         maxTokens: 10240,
         temperature: 0.4,
       });
-      const norm = normalizeSolution(raw, id);
+      const norm0 = normalizeSolution(raw, id);
+      // 运行时 Schema 校验（P0-4）：类型不符的字段就地修正，结构缺失才判失败
+      const parsed = norm0 ? solutionSchema.safeParse(norm0) : null;
+      const norm = parsed?.success ? (parsed.data as any) : null;
+      if (!norm && norm0 && parsed && !parsed.success) {
+        lastError = `方案结构校验失败：${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".")}:${i.message}`).join("；")}`;
+      }
       if (!norm) {
         lastError = `模型返回的结构缺少功能块（收到字段：${Object.keys(raw?.solution || raw || {}).slice(0, 8).join("/") || "空"}）`;
       }
@@ -118,7 +151,10 @@ ${catalog || "（模块库为空，允许方案使用通用模块名，module_id
   if (!usable.length) {
     return { ok: false, output: null, message: `方案结构不完整：${lastError || "缺少功能块"}` };
   }
-  const truncation_note = undefined;
+  const partial = lastRepairApplied();
+  const truncation_note = partial
+    ? "本次输出曾被截断并自动修复，方案可能不完整（例如缺少部分连线或功能块）—— 请仔细核对后再确认为主方案，或重新生成。"
+    : undefined;
 
   // 生成后立即做规则预检（需求覆盖 + 接口兼容）
   const fresh = usable.map((sol: SolutionProposal) => ({
@@ -127,12 +163,21 @@ ${catalog || "（模块库为空，允许方案使用通用模块名，module_id
   }));
   const solutions = [...existing, ...fresh];
 
+  // 需求覆盖率核对（P0-5 配套）：未纳入上下文的需求也要如实计入未覆盖
+  for (const sol of fresh as any[]) {
+    const covered = new Set<string>();
+    for (const b of sol.blocks || []) for (const rid of b.covers_requirements || []) covered.add(rid);
+    const uncovered = reqAll.map((r) => r.id).filter((id) => !covered.has(id));
+    sol.uncovered_requirements = uncovered;
+    sol.coverage = { total: reqAll.length, covered: reqAll.length - uncovered.length, omitted_from_context: reqOmitted };
+  }
+
   return {
     ok: true,
     artifact_type: "solution_proposal",
-    output: { solutions, candidate_solutions: solutions, recommended_solution: solutions[0]?.solution_id, truncation_note },
+    output: { solutions, candidate_solutions: solutions, recommended_solution: solutions[0]?.solution_id, truncation_note, partial_output: partial, repair_applied: partial },
     human_review_required: true, // 候选方案必须人工确认才能变成最终方案
-    message: existing.length ? `已追加备选方案 ${nextId}，可与现有方案对比` : "方案已生成，请核对后确认为主方案",
+    message: (existing.length ? `已追加备选方案 ${nextId}，可与现有方案对比` : "方案已生成，请核对后确认为主方案") + (partial ? "（⚠ 输出曾被截断修复，请重点核对完整性）" : ""),
   };
 });
 
