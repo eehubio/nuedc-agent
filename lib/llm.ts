@@ -16,6 +16,7 @@ export interface LlmOptions {
   system: string;
   messages: LlmMessage[];
   maxTokens?: number;
+  json?: boolean;   // 请求提供方以 JSON 模式输出（Gemini/OpenAI 支持）
   temperature?: number;
 }
 
@@ -82,7 +83,7 @@ export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
   const system = opts.system +
     "\n\n输出要求：只输出一个合法 JSON 对象，不要输出 Markdown 代码围栏、前言或解释文字。" +
     "\n务必控制篇幅：描述性字段简明扼要（每条不超过 60 字），确保 JSON 在 token 限额内完整闭合。";
-  const raw = await llmComplete({ ...opts, system });
+  const raw = await llmComplete({ ...opts, system, json: true });
   const cleaned = raw.replace(/```json|```/g, "").trim();
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
@@ -103,6 +104,7 @@ export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
     try {
       const retry = await llmComplete({
         ...opts,
+        json: true,
         system: system + "\n上一次输出因过长被截断。请大幅精简：只保留必要字段，描述控制在 30 字以内。",
         maxTokens: Math.min((opts.maxTokens ?? 4096) * 2, 16384),
         temperature: 0,
@@ -178,12 +180,17 @@ async function openaiComplete(opts: LlmOptions): Promise<string> {
       model: process.env.OPENAI_MODEL || "gpt-4o-mini",
       max_tokens: opts.maxTokens ?? 4096,
       temperature: opts.temperature ?? 0.3,
+      ...(opts.json ? { response_format: { type: "json_object" } } : {}),
       messages,
     }),
   });
   if (!res.ok) throw new Error(`OpenAI API ${res.status}: ${await res.text()}`);
   const data = await res.json();
-  return data.choices?.[0]?.message?.content ?? "";
+  const choice = data.choices?.[0];
+  const text = choice?.message?.content ?? "";
+  if (!text) throw new Error(`模型未返回内容（finish_reason=${choice?.finish_reason || "未知"}）`);
+  if (choice?.finish_reason === "length") console.warn("[openai] 输出达到 max_tokens 被截断");
+  return text;
 }
 
 // ---------- Gemini ----------
@@ -208,11 +215,33 @@ async function geminiComplete(opts: LlmOptions): Promise<string> {
       body: JSON.stringify({
         system_instruction: { parts: [{ text: opts.system }] },
         contents,
-        generationConfig: { maxOutputTokens: opts.maxTokens ?? 4096, temperature: opts.temperature ?? 0.3 },
+        generationConfig: {
+          maxOutputTokens: opts.maxTokens ?? 4096,
+          temperature: opts.temperature ?? 0.3,
+          responseMimeType: opts.json ? "application/json" : undefined,
+          // Gemini 2.5 的 thinking token 会吃掉输出配额，导致正文被腰斩甚至为空 —— 显式关闭
+          thinkingConfig: /2\.5|thinking/i.test(model) ? { thinkingBudget: 0 } : undefined,
+        },
       }),
     }
   );
   if (!res.ok) throw new Error(`Gemini API ${res.status}: ${await res.text()}`);
   const data = await res.json();
-  return data.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join("\n") ?? "";
+  const cand = data.candidates?.[0];
+  const text = cand?.content?.parts?.map((p: any) => p.text).filter(Boolean).join("\n") ?? "";
+  const reason = cand?.finishReason;
+  const usage = data.usageMetadata;
+  // 把真实失败原因暴露出来，不再被静默吞掉
+  if (!text) {
+    throw new Error(
+      `Gemini 未返回内容（finishReason=${reason || "未知"}${usage ? `, 输出token=${usage.candidatesTokenCount ?? 0}/${opts.maxTokens ?? 4096}` : ""}）。` +
+      (reason === "SAFETY" ? "内容被安全策略拦截。" :
+       reason === "MAX_TOKENS" ? "输出额度被耗尽（可能是 thinking token 占用），请缩短输入或提高 maxTokens。" :
+       reason === "RECITATION" ? "被判定为重复引用而中断。" : "")
+    );
+  }
+  if (reason === "MAX_TOKENS") {
+    console.warn(`[gemini] 输出达到上限被截断（${usage?.candidatesTokenCount}/${opts.maxTokens}），将尝试修复`);
+  }
+  return text;
 }

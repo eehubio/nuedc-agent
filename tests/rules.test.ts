@@ -309,3 +309,24 @@ describe("模块目录裁剪", () => {
     expect(out).not.toContain("未列出");
   });
 });
+
+describe("Gemini thinking 预算与截断诊断", () => {
+  it("2.5 系列模型应关闭 thinking 预算（否则思考 token 吃掉输出配额）", () => {
+    const shouldDisable = (m: string) => /2\.5|thinking/i.test(m);
+    expect(shouldDisable("gemini-2.5-flash")).toBe(true);
+    expect(shouldDisable("gemini-2.5-pro")).toBe(true);
+    expect(shouldDisable("gemini-2.0-flash")).toBe(false);
+  });
+});
+
+describe("历年赛题库", () => {
+  it("年份倒序、每年至少一题、题号唯一", async () => {
+    const { PAST_PROBLEMS, PROBLEM_YEARS } = await import("../data/past-problems");
+    expect(Number(PROBLEM_YEARS[0])).toBeGreaterThan(Number(PROBLEM_YEARS[PROBLEM_YEARS.length - 1]));
+    for (const y of PROBLEM_YEARS) {
+      const list = PAST_PROBLEMS[y];
+      expect(list.length).toBeGreaterThan(0);
+      expect(new Set(list.map((p) => p.code)).size).toBe(list.length);
+    }
+  });
+});

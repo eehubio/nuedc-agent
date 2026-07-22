@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { PAST_PROBLEMS, PROBLEM_YEARS } from "../data/past-problems";
 
 export function StaleBanner({ ctx, types, label }: { ctx: any; types: string[]; label: string }) {
   if (!types.some((t) => ctx.staleTypes?.includes(t))) return null;
@@ -106,6 +107,8 @@ export function SolutionPage({ ctx }: { ctx: any }) {
         ))}
         {ctx.shortlist.length > 0 && <span className="hint" style={{ marginLeft: "auto" }}>已选用 {ctx.shortlist.length} 个模块将被优先考虑</span>}
       </div>
+
+      {!ctx.requirements && <ProblemPicker ctx={ctx} />}
 
       <div className="solution-wrap">
         {/* 左：AI 助手对话 */}
@@ -678,5 +681,70 @@ function BlockList({ sol, ctx }: { sol: any; ctx: any }) {
         </div>
       )}
     </>
+  );
+}
+
+
+/* ============ 赛题选择器：历年赛题 / PDF 上传 / 粘贴文本 ============ */
+function ProblemPicker({ ctx }: { ctx: any }) {
+  const [year, setYear] = useState(PROBLEM_YEARS[0]);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const problems = PAST_PROBLEMS[year] || [];
+  const picked = problems.find((p) => p.code === code);
+
+  async function onPdf(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (f.size > 8 * 1024 * 1024) { setMsg("PDF 超过 8MB，请压缩后再传"); return; }
+    setBusy(true); setMsg(`正在解析 ${f.name}…`);
+    const b64: string = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result).split(",")[1]);
+      r.onerror = () => rej(new Error("读取失败"));
+      r.readAsDataURL(f);
+    });
+    const r = await fetch("/api/extract-pdf", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ data_base64: b64 }) }).then((x) => x.json());
+    setBusy(false);
+    if (r.text) {
+      setMsg(`已提取 ${r.chars} 字，正在解析需求…`);
+      ctx.runInterpret(r.text);
+    } else setMsg(r.error || "解析失败，请改用粘贴文本");
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <h3>选择赛题</h3>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <select value={year} onChange={(e) => { setYear(e.target.value); setCode(""); }}
+          style={{ padding: 7, borderRadius: 8, border: "1px solid var(--line)" }}>
+          {PROBLEM_YEARS.map((y) => <option key={y} value={y}>{y} 年</option>)}
+        </select>
+        <select value={code} onChange={(e) => setCode(e.target.value)}
+          style={{ padding: 7, borderRadius: 8, border: "1px solid var(--line)", minWidth: 260 }}>
+          <option value="">— 选择题目 —</option>
+          {problems.map((p) => <option key={p.code} value={p.code}>{p.code} 题：{p.title}{p.group ? `（${p.group}）` : ""}</option>)}
+        </select>
+        <label className="btn ghost sm" style={{ display: "inline-block" }}>
+          📄 上传赛题 PDF
+          <input type="file" accept="application/pdf" hidden onChange={onPdf} disabled={busy} />
+        </label>
+        {busy && <span className="spinner" />}
+      </div>
+      {picked && (
+        <div className="issue info" style={{ marginTop: 10, display: "block" }}>
+          已选：<b>{year} 年 {picked.code} 题 · {picked.title}</b>
+          <p className="hint" style={{ margin: "4px 0 8px" }}>
+            题面正文受组委会版权保护，平台不内置。请上传该题 PDF，或把题面粘贴到下方对话框 —— 完整题面（含指标与评分表）能显著提升方案质量。
+          </p>
+          <button className="btn sm" onClick={() => ctx.runInterpret(
+            `${year} 年全国大学生电子设计竞赛 ${picked.code} 题：${picked.title}\n（题面正文未提供，请基于题名与常规赛题结构给出设计框架，并把所有缺失的量化指标标注为待补充）`
+          )}>仅按题名生成框架</button>
+        </div>
+      )}
+      {msg && <p className="hint" style={{ marginTop: 8 }}>{msg}</p>}
+      <p className="hint" style={{ marginTop: 8 }}>💡 电赛题目下发即为 PDF，直接上传最省事；也可直接把题面粘贴到下方对话框。</p>
+    </div>
   );
 }
