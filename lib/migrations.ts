@@ -506,6 +506,14 @@ CREATE TABLE IF NOT EXISTS worker_heartbeats (
 CREATE INDEX IF NOT EXISTS idx_worker_beat ON worker_heartbeats(last_beat_at);
 `,
   },
+  {
+    id: 20,
+    name: "worker_deployed_sha",
+    sql: `
+-- Worker 上报自身代码版本，用于与 Web 版本比对（两者独立部署，容易漂移）
+ALTER TABLE worker_heartbeats ADD COLUMN IF NOT EXISTS deployed_sha TEXT;
+`,
+  },
 ];
 
 let applied = false;

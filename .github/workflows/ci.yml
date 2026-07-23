@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # 手工触发：用于验证 Actions 本身是否被启用（仓库设置 / 组织策略问题的排查入口）
+  workflow_dispatch:
 
 # 同一分支的新推送取消旧的运行，节省额度
 concurrency:
@@ -61,7 +63,35 @@ jobs:
         run: npm run typecheck
 
       - name: Test
-        run: npm test
+        run: npm test -- --reporter=default --reporter=junit --outputFile=reports/junit.xml
+        continue-on-error: false
+
+      - name: Worker startup smoke log
+        if: always()
+        run: |
+          mkdir -p reports
+          NODE20_BIN="$(which node)" npx vitest run tests/worker-startup.test.ts \
+            > reports/worker-startup.log 2>&1 || true
+          tail -40 reports/worker-startup.log
+
+      - name: Mock load test summary
+        if: always()
+        env:
+          LOAD_MODE: queue-only
+          LOAD_USERS: "50"
+        run: |
+          mkdir -p reports
+          npx tsx scripts/load-test.mts > reports/load-test-summary.txt 2>&1 || true
+          tail -40 reports/load-test-summary.txt
 
       - name: Build
         run: npm run build
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-node${{ matrix.node-version }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14

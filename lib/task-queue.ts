@@ -188,14 +188,22 @@ export async function queueStats() {
 /** Worker 心跳上报（每次心跳/轮询时调用，upsert 一行） */
 export async function workerHeartbeat(opts: {
   workerId: string; host: string; pid: number; heavySlots: number; lightSlots: number; inFlight: number;
+  deployedSha?: string | null;
 }): Promise<void> {
+  // deployed_sha 用于与 Web 侧版本比对：两者独立部署，很容易出现 Worker 跑旧代码
+  const sha = opts.deployedSha
+    ?? process.env.WORKER_DEPLOYED_SHA
+    ?? process.env.RAILWAY_GIT_COMMIT_SHA
+    ?? process.env.GIT_COMMIT_SHA
+    ?? null;
   await db().execute({
-    sql: `INSERT INTO worker_heartbeats (worker_id, host, pid, heavy_slots, light_slots, in_flight, last_beat_at, started_at)
-          VALUES (?,?,?,?,?,?, now(), now())
+    sql: `INSERT INTO worker_heartbeats (worker_id, host, pid, heavy_slots, light_slots, in_flight, deployed_sha, last_beat_at, started_at)
+          VALUES (?,?,?,?,?,?,?, now(), now())
           ON CONFLICT (worker_id) DO UPDATE SET
             host=EXCLUDED.host, pid=EXCLUDED.pid, heavy_slots=EXCLUDED.heavy_slots,
-            light_slots=EXCLUDED.light_slots, in_flight=EXCLUDED.in_flight, last_beat_at=now()`,
-    args: [opts.workerId, opts.host, opts.pid, opts.heavySlots, opts.lightSlots, opts.inFlight],
+            light_slots=EXCLUDED.light_slots, in_flight=EXCLUDED.in_flight,
+            deployed_sha=EXCLUDED.deployed_sha, last_beat_at=now()`,
+    args: [opts.workerId, opts.host, opts.pid, opts.heavySlots, opts.lightSlots, opts.inFlight, sha],
   }).catch(() => {});
 }
 

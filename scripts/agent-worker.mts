@@ -19,7 +19,8 @@ import { hostname } from "node:os";
 import "../lib/agents/index";
 import { runAgent, isRetryable, classifyAgentError } from "../lib/agents/base";
 import { claimTask, heartbeat, reclaimExpired, completeTask, failTask, workerHeartbeat, workerDeregister, HEARTBEAT_MS, type ClaimedTask } from "../lib/task-queue";
-import { db, ensureSchema } from "../lib/db";
+import { db, ensureSchema, closeTxPool } from "../lib/db";
+import { metrics } from "../lib/worker-metrics";
 import type { AgentType, ProjectStage } from "../lib/types";
 
 const WORKER_ID = process.env.WORKER_ID || `${hostname()}:${process.pid}`;
@@ -40,11 +41,13 @@ function log(...args: any[]) {
 
 async function executeOne(task: ClaimedTask): Promise<void> {
   inFlight++;
+  metrics.taskStarted();
   const abort = new AbortController();
   let canceledByPoll = false;
 
   // 租约心跳：30 秒续租一次，仅维持任务归属
   const hb = setInterval(async () => {
+    metrics.heartbeat();
     const alive = await heartbeat(task.task_id, WORKER_ID);
     if (!alive) log(`⚠ ${task.task_id} 租约已失效（可能已被回收），本次结果将被丢弃`);
   }, HEARTBEAT_MS);
@@ -53,12 +56,16 @@ async function executeOne(task: ClaimedTask): Promise<void> {
   // 与心跳合并会让取消最坏延迟 30 秒才生效，Provider 请求白烧那么久的 token。
   const cancelPoll = setInterval(async () => {
     if (abort.signal.aborted) return;
+    metrics.cancelPoll();
     const c = await db().execute({
       sql: "SELECT cancel_requested FROM agent_tasks WHERE task_id=?", args: [task.task_id],
-    }).catch(() => ({ rows: [] as any[] }));
+    }).catch(() => { metrics.cancelPollError(); return { rows: [] as any[] }; });
     if (Number((c.rows[0] as any)?.cancel_requested || 0) === 1) {
+      const detectedAt = Date.now();
       canceledByPoll = true;
+      metrics.cancelRequested();
       abort.abort();
+      metrics.cancelAbortLatency(Date.now() - detectedAt);
       log(`✋ ${task.task_id} 收到取消请求，正在中断 Provider 调用`);
     }
   }, CANCEL_POLL_MS);
@@ -146,6 +153,7 @@ async function executeOne(task: ClaimedTask): Promise<void> {
   } finally {
     clearInterval(hb);
     clearInterval(cancelPoll);
+    metrics.taskEnded();
     inFlight--;
   }
 }
@@ -225,6 +233,8 @@ async function main() {
     }).catch(() => {});
     // 注销心跳，避免被误判为「失联 Worker」
     await workerDeregister(WORKER_ID);
+    // 关闭共享事务连接池，释放 Neon 连接
+    await closeTxPool();
     log("已优雅退出");
     process.exit(0);
   };

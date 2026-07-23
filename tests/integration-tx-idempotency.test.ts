@@ -203,9 +203,9 @@ describe("三、idempotency_key 并发", () => {
     const fs = await import("node:fs");
     const src = fs.readFileSync("app/api/agent-tasks/route.ts", "utf8");
     expect(src).toContain("23505");                     // 捕获 unique_violation
-    expect(src).toMatch(/idemConflict/);
+    expect(src).toMatch(/IDEMPOTENCY_CONFLICT/);
     // 冲突分支必须退款且返回已有 task_id，不能 500
-    const branch = src.slice(src.indexOf("if (idemConflict)"));
+    const branch = src.slice(src.indexOf('if (conflictKind === "IDEMPOTENCY_CONFLICT")'));
     expect(branch).toMatch(/refundQuota/);
     expect(branch).toMatch(/idempotency_key/);
   });

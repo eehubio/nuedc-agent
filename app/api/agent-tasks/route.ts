@@ -92,7 +92,9 @@ export async function POST(req: NextRequest) {
   // idempotency_key 的唯一冲突由 catch 捕获 —— 两条并发请求都通过了上面的 SELECT 时，
   // 其中一条必然在这里撞唯一约束，必须退还它预占的配额并返回既有任务，而不是抛 500。
   let ins: { rows: Record<string, unknown>[] };
-  let idemConflict = false;
+  type ConflictKind = null | "IDEMPOTENCY_CONFLICT" | "ACTIVE_DEDUP_CONFLICT" | "UNEXPECTED_UNIQUE_CONFLICT";
+  let conflictKind: ConflictKind = null;
+  let conflictDetail = "";
   try {
     ins = await db().execute({
       sql: `INSERT INTO agent_tasks (task_id, project_id, agent_type, status, input, tier, idempotency_key, model,
@@ -104,13 +106,14 @@ export async function POST(req: NextRequest) {
         taskType, policy.priority, hash, dedupKey, id.owner, policy.concurrencyClass, policy.costClass, quotaRef, quotaKind],
     });
   } catch (e: any) {
-    // 23505 = unique_violation。判定是否为 idempotency_key 冲突（约束名或列名匹配）
+    // 23505 = unique_violation。必须区分是哪一个唯一约束 ——
+    // 把所有唯一冲突都当成 idempotency 冲突，会在其他约束冲突时
+    // 返回一个与本次请求无关的既有任务（错误地把别的任务交给用户）。
     const msg = String(e?.message || e);
+    const detail = String(e?.detail || e?.constraint || "");
     const code = String(e?.code || "");
-    if (code === "23505" || /duplicate key|unique constraint|already exists/i.test(msg)) {
-      idemConflict = true;
-      ins = { rows: [] };
-    } else {
+    const isUnique = code === "23505" || /duplicate key|unique constraint|already exists/i.test(msg);
+    if (!isUnique) {
       // 非唯一冲突的意外错误：退还预占，避免配额泄漏
       if (quotaRef && quotaKind) {
         const { refundQuota } = await import("@/lib/usage");
@@ -118,9 +121,35 @@ export async function POST(req: NextRequest) {
       }
       throw e;
     }
+    const hay = `${msg} ${detail}`;
+    if (/idx_tasks_idem_owner|owner_ref.*idempotency_key|idempotency_key.*owner_ref/i.test(hay)) {
+      conflictKind = "IDEMPOTENCY_CONFLICT";
+    } else if (/idx_tasks_active_dedup|dedup_key/i.test(hay)) {
+      conflictKind = "ACTIVE_DEDUP_CONFLICT";
+    } else {
+      conflictKind = "UNEXPECTED_UNIQUE_CONFLICT";
+    }
+    ins = { rows: [] };
+    conflictDetail = hay.slice(0, 300);
   }
 
-  if (idemConflict) {
+  // 未知唯一冲突：退款 + 结构化日志 + 409，绝不返回无关的既有任务
+  if (conflictKind === "UNEXPECTED_UNIQUE_CONFLICT") {
+    if (quotaRef && quotaKind) {
+      const { refundQuota } = await import("@/lib/usage");
+      await refundQuota(id.owner, quotaKind, quotaRef).catch(() => {});
+    }
+    console.error(JSON.stringify({
+      event: "unexpected_unique_conflict", owner: id.owner, agent, task_type: taskType,
+      dedup_key: dedupKey, idempotency_key: body.idempotency_key || null, detail: conflictDetail,
+    }));
+    return NextResponse.json({
+      error: "任务创建遇到未预期的唯一约束冲突，请重试；若持续出现请联系管理员",
+      error_code: "UNEXPECTED_UNIQUE_CONFLICT",
+    }, { status: 409 });
+  }
+
+  if (conflictKind === "IDEMPOTENCY_CONFLICT") {
     // 并发幂等冲突：退还本次预占，返回先到那一条已存在的任务（同一个 task_id）
     if (quotaRef && quotaKind) {
       const { refundQuota } = await import("@/lib/usage");

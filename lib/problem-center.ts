@@ -98,7 +98,9 @@ export async function getPublishedVersion(problemId: string) {
  *  executor 默认走全局 db()；在事务中必须由调用方传入 tx，
  *  否则读取会走另一条连接，看不到事务内的改动、也不在 FOR UPDATE 的一致快照里。 */
 export async function getVersionContent(versionId: string, executor?: Executor) {
-  await ensureSchema();
+  // 传入 executor（事务）时由外层保证 schema ready：此处再调 ensureSchema 会走全局
+  // db 连接，既在事务外产生额外往返，也可能在事务持锁期间引发迁移写入
+  if (!executor) await ensureSchema();
   const ex = executor ?? db();
   // 事务内是单条连接，不能并发多路复用，因此顺序执行（非事务下这点开销可忽略）
   const ver = await ex.execute({
@@ -345,16 +347,19 @@ export function diffExtractions(
 }
 
 export async function saveDiffs(versionId: string, problemId: string, diffs: Diff[], providerA: string, providerB: string) {
-  await db().execute({ sql: "DELETE FROM problem_review_diffs WHERE version_id=? AND resolved=0", args: [versionId] }).catch(() => {});
-  for (const d of diffs) {
-    await db().execute({
-      sql: `INSERT INTO problem_review_diffs (problem_id, version_id, requirement_no, field_path,
-              provider_a, provider_b, value_a, value_b, severity, match_method, match_confidence)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-      args: [problemId, versionId, d.requirement_no ?? null, d.field_path, providerA, providerB,
-        d.value_a?.slice(0, 500), d.value_b?.slice(0, 500), d.severity, d.match_method, d.match_confidence],
-    }).catch(() => {});
-  }
+  // 差异写入同样受版本锁保护；不再 .catch 吞掉错误（静默失败会让差异清单看起来"无差异"）
+  await withVersionWriteLock(versionId, async (tx) => {
+    await tx.execute({ sql: "DELETE FROM problem_review_diffs WHERE version_id=? AND resolved=0", args: [versionId] });
+    for (const d of diffs) {
+      await tx.execute({
+        sql: `INSERT INTO problem_review_diffs (problem_id, version_id, requirement_no, field_path,
+                provider_a, provider_b, value_a, value_b, severity, match_method, match_confidence)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        args: [problemId, versionId, d.requirement_no ?? null, d.field_path, providerA, providerB,
+          d.value_a?.slice(0, 500), d.value_b?.slice(0, 500), d.severity, d.match_method, d.match_confidence],
+      });
+    }
+  });
 }
 
 /* ============ 发布清单与不可变版本 ============ */
@@ -365,7 +370,8 @@ export interface ChecklistItem { key: string; label: string; passed: boolean; de
 /** 发布前检查。所有 severity=error 的项通过（或 admin 显式 override）才允许发布。
  *  executor 默认走全局 db()；在事务中必须传入 tx，保证与发布写入同一快照。 */
 export async function publicationChecklist(versionId: string, executor?: Executor): Promise<{ items: ChecklistItem[]; passed: boolean }> {
-  await ensureSchema();
+  // 同 getVersionContent：传入 tx 时不得再访问全局 db
+  if (!executor) await ensureSchema();
   const ex = executor ?? db();
   const content = await getVersionContent(versionId, ex);
   const items: ChecklistItem[] = [];
@@ -462,11 +468,68 @@ export async function publicationChecklist(versionId: string, executor?: Executo
   return { items, passed: items.every((i) => i.passed || i.severity === "warning") };
 }
 
-export async function addReview(versionId: string, reviewer: string, decision: "approve" | "reject", note?: string) {
+/** 赛题子表写入统一守卫。
+ *
+ *  problem_requirements / problem_scoring_items / problem_notes /
+ *  problem_reviews / problem_review_diffs 都从属于某个 problem_version，
+ *  任何修改都必须：
+ *    事务内 SELECT problem_versions FOR UPDATE
+ *    → 检查 immutable=0 且 status != 'published'
+ *    → 执行修改 → commit
+ *
+ *  否则会出现：发布事务正在冻结版本的同时，另一条连接仍在改子表 ——
+ *  content_hash 与实际内容对不上，已发布版本的"不可变"承诺被破坏。
+ *
+ *  用法：
+ *    await withVersionWriteLock(versionId, async (tx) => { ...修改子表... });
+ */
+export async function withVersionWriteLock<T>(
+  versionId: string,
+  fn: (tx: Executor) => Promise<T>,
+): Promise<T> {
   await ensureSchema();
-  await db().execute({
-    sql: "INSERT INTO problem_reviews (review_id, version_id, reviewer, decision, note) VALUES (?,?,?,?,?)",
-    args: [uid("PRV"), versionId, reviewer, decision, note || null],
+  return withTransaction(async (tx) => {
+    const v = await tx.execute({
+      sql: "SELECT immutable, status FROM problem_versions WHERE version_id=? FOR UPDATE",
+      args: [versionId],
+    });
+    if (!v.rows.length) throw new VersionWriteError("版本不存在", "NOT_FOUND");
+    const row: any = v.rows[0];
+    if (Number(row.immutable) === 1 || String(row.status) === "published") {
+      throw new VersionWriteError("已发布版本不可修改，请创建新版本后再编辑", "IMMUTABLE");
+    }
+    return fn(tx);
+  });
+}
+
+/** 子表写入被拒绝的结构化错误（便于 API 层映射为 409） */
+export class VersionWriteError extends Error {
+  constructor(message: string, readonly code: "NOT_FOUND" | "IMMUTABLE") {
+    super(message);
+    this.name = "VersionWriteError";
+  }
+}
+
+/** 由子表行反查其所属 version_id（API 层只拿到 note_id / diff id 时使用） */
+export async function versionIdOf(table: "problem_notes" | "problem_review_diffs" | "problem_requirements", idCol: string, idVal: string): Promise<string | null> {
+  await ensureSchema();
+  const allowed: Record<string, string> = {
+    problem_notes: "note_id", problem_review_diffs: "id", problem_requirements: "req_id",
+  };
+  if (allowed[table] !== idCol) throw new Error("非法的子表主键列");
+  const rs = await db().execute({
+    sql: `SELECT version_id FROM ${table} WHERE ${idCol}=?`, args: [idVal],
+  });
+  return rs.rows.length ? String(rs.rows[0].version_id) : null;
+}
+
+export async function addReview(versionId: string, reviewer: string, decision: "approve" | "reject", note?: string) {
+  // 审核记录同样受版本锁保护：不能给已发布版本追加审核
+  await withVersionWriteLock(versionId, async (tx) => {
+    await tx.execute({
+      sql: "INSERT INTO problem_reviews (review_id, version_id, reviewer, decision, note) VALUES (?,?,?,?,?)",
+      args: [uid("PRV"), versionId, reviewer, decision, note || null],
+    });
   });
 }
 
