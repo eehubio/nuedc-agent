@@ -18,7 +18,7 @@
 import { hostname } from "node:os";
 import "../lib/agents/index";
 import { runAgent, isRetryable, classifyAgentError } from "../lib/agents/base";
-import { claimTask, heartbeat, reclaimExpired, completeTask, failTask, HEARTBEAT_MS, type ClaimedTask } from "../lib/task-queue";
+import { claimTask, heartbeat, reclaimExpired, completeTask, failTask, workerHeartbeat, workerDeregister, HEARTBEAT_MS, type ClaimedTask } from "../lib/task-queue";
 import { db, ensureSchema } from "../lib/db";
 import type { AgentType, ProjectStage } from "../lib/types";
 
@@ -181,9 +181,29 @@ async function consumeLoop(heavy: boolean, slots: number) {
   await Promise.allSettled([...running]);
 }
 
+/** Worker 存活心跳循环：上报槽位与在途数，供 readiness 与失联报警使用 */
+async function workerBeatLoop() {
+  while (!shuttingDown) {
+    try {
+      await workerHeartbeat({
+        workerId: WORKER_ID, host: hostname(), pid: process.pid,
+        heavySlots: HEAVY_SLOTS, lightSlots: LIGHT_SLOTS, inFlight,
+      });
+    } catch (e: any) {
+      log("心跳上报异常:", String(e?.message || e).slice(0, 120));
+    }
+    await sleep(HEARTBEAT_MS);
+  }
+}
+
 async function main() {
   await ensureSchema();
   log(`启动：重型槽位 ${HEAVY_SLOTS} · 轻型槽位 ${LIGHT_SLOTS} · 轮询 ${POLL_MS}ms`);
+  // 启动即上报一次，避免 readiness 在首个心跳周期前误判无 Worker
+  await workerHeartbeat({
+    workerId: WORKER_ID, host: hostname(), pid: process.pid,
+    heavySlots: HEAVY_SLOTS, lightSlots: LIGHT_SLOTS, inFlight: 0,
+  });
 
   const shutdown = async (sig: string) => {
     if (shuttingDown) return;
@@ -197,6 +217,8 @@ async function main() {
             WHERE worker_id=? AND status='running'`,
       args: [WORKER_ID],
     }).catch(() => {});
+    // 注销心跳，避免被误判为「失联 Worker」
+    await workerDeregister(WORKER_ID);
     log("已优雅退出");
     process.exit(0);
   };
@@ -207,6 +229,7 @@ async function main() {
     consumeLoop(true, HEAVY_SLOTS),
     consumeLoop(false, LIGHT_SLOTS),
     reclaimLoop(),
+    workerBeatLoop(),
   ]);
 }
 

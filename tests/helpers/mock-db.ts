@@ -42,6 +42,8 @@ vi.mock("@neondatabase/serverless", () => ({ neon: () => neonShim() }));
 export async function setupMockDb(): Promise<MockDbContext> {
   // 必须在 import lib/db 之前把 DATABASE_URL 设好，否则 conn() 会抛错
   process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://mock/mock";
+  // 让 withTransaction 走 pglite 有状态路径，而非 neon Pool
+  process.env.PGLITE_TEST = "1";
 
   // 同一测试文件内复用同一个 pglite 实例与已跑过的迁移
   if (!active) {

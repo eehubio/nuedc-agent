@@ -479,6 +479,33 @@ CREATE TABLE IF NOT EXISTS provider_task_health (
 CREATE INDEX IF NOT EXISTS idx_ptask_health ON provider_task_health(provider, model, task_type, window_start DESC);
 `,
   },
+  {
+    id: 19,
+    name: "publish_strictness_and_worker_heartbeats",
+    sql: `
+-- 正式需求溯源类型（区分 AI 提取 / 工作人员补充）
+ALTER TABLE problem_requirements ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'AI_EXTRACTED';
+ALTER TABLE problem_requirements ADD COLUMN IF NOT EXISTS staff_reviewer TEXT;
+ALTER TABLE problem_requirements ADD COLUMN IF NOT EXISTS staff_reason TEXT;
+
+-- Contest 预期评分结构（发布时精确核对）
+ALTER TABLE problem_versions ADD COLUMN IF NOT EXISTS expected_total_score NUMERIC(8,2);
+ALTER TABLE problem_versions ADD COLUMN IF NOT EXISTS expected_report_score NUMERIC(8,2);
+ALTER TABLE problem_versions ADD COLUMN IF NOT EXISTS expected_basic_score NUMERIC(8,2);
+ALTER TABLE problem_versions ADD COLUMN IF NOT EXISTS expected_advanced_score NUMERIC(8,2);
+
+-- Worker 心跳表（失联 / 积压报警）
+CREATE TABLE IF NOT EXISTS worker_heartbeats (
+  worker_id TEXT PRIMARY KEY,
+  host TEXT, pid INTEGER,
+  heavy_slots INTEGER, light_slots INTEGER,
+  in_flight INTEGER DEFAULT 0,
+  last_beat_at TIMESTAMPTZ DEFAULT now(),
+  started_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_worker_beat ON worker_heartbeats(last_beat_at);
+`,
+  },
 ];
 
 let applied = false;

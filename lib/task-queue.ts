@@ -186,3 +186,83 @@ export async function queueStats() {
     count: Number(r.n), avgWaitSec: Math.round(Number(r.avg_wait)),
   }));
 }
+
+/** Worker 心跳上报（每次心跳/轮询时调用，upsert 一行） */
+export async function workerHeartbeat(opts: {
+  workerId: string; host: string; pid: number; heavySlots: number; lightSlots: number; inFlight: number;
+}): Promise<void> {
+  await db().execute({
+    sql: `INSERT INTO worker_heartbeats (worker_id, host, pid, heavy_slots, light_slots, in_flight, last_beat_at, started_at)
+          VALUES (?,?,?,?,?,?, now(), now())
+          ON CONFLICT (worker_id) DO UPDATE SET
+            host=EXCLUDED.host, pid=EXCLUDED.pid, heavy_slots=EXCLUDED.heavy_slots,
+            light_slots=EXCLUDED.light_slots, in_flight=EXCLUDED.in_flight, last_beat_at=now()`,
+    args: [opts.workerId, opts.host, opts.pid, opts.heavySlots, opts.lightSlots, opts.inFlight],
+  }).catch(() => {});
+}
+
+/** Worker 退出时注销心跳 */
+export async function workerDeregister(workerId: string): Promise<void> {
+  await db().execute({ sql: "DELETE FROM worker_heartbeats WHERE worker_id=?", args: [workerId] }).catch(() => {});
+}
+
+export interface QueueHealth {
+  activeWorkers: number;      // 心跳新鲜的 Worker 数
+  staleWorkers: number;       // 心跳超时的 Worker 数
+  queuedTasks: number;
+  runningTasks: number;
+  oldestQueuedSec: number;    // 最久排队任务的等待秒数
+  deadRecent: number;         // 近 1 小时死信数
+  alarms: string[];           // 触发的报警项
+}
+
+/** 队列与 Worker 健康：供 readiness / 告警使用。
+ *  报警条件：无活动 Worker、队列积压、有任务排队但无人消费、死信激增。 */
+export async function queueHealth(opts: {
+  workerStaleMs?: number; backlogThreshold?: number; oldestQueuedAlarmSec?: number;
+} = {}): Promise<QueueHealth> {
+  await ensureSchema();
+  const staleMs = opts.workerStaleMs ?? 3 * LEASE_MS;      // 默认 3 个租约周期无心跳即失联
+  const backlog = opts.backlogThreshold ?? 200;
+  const oldestAlarm = opts.oldestQueuedAlarmSec ?? 300;    // 排队 5 分钟仍未开始即告警
+
+  const [workers, tasks, dead] = await Promise.all([
+    db().execute({
+      sql: `SELECT
+              SUM(CASE WHEN last_beat_at > now() - (? || ' milliseconds')::interval THEN 1 ELSE 0 END) active,
+              SUM(CASE WHEN last_beat_at <= now() - (? || ' milliseconds')::interval THEN 1 ELSE 0 END) stale
+            FROM worker_heartbeats`,
+      args: [String(staleMs), String(staleMs)],
+    }).catch(() => ({ rows: [{ active: 0, stale: 0 }] as any[] })),
+    db().execute({
+      sql: `SELECT
+              SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) queued,
+              SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) running,
+              COALESCE(MAX(CASE WHEN status='queued' THEN EXTRACT(EPOCH FROM (now() - created_at)) END), 0) oldest
+            FROM agent_tasks`,
+      args: [],
+    }).catch(() => ({ rows: [{ queued: 0, running: 0, oldest: 0 }] as any[] })),
+    db().execute({
+      sql: "SELECT COUNT(*) n FROM agent_tasks WHERE status='dead' AND completed_at > now() - interval '1 hour'",
+      args: [],
+    }).catch(() => ({ rows: [{ n: 0 }] as any[] })),
+  ]);
+
+  const w: any = workers.rows[0] || {};
+  const t: any = tasks.rows[0] || {};
+  const activeWorkers = Number(w.active || 0);
+  const staleWorkers = Number(w.stale || 0);
+  const queuedTasks = Number(t.queued || 0);
+  const runningTasks = Number(t.running || 0);
+  const oldestQueuedSec = Math.round(Number(t.oldest || 0));
+  const deadRecent = Number((dead.rows[0] as any)?.n || 0);
+
+  const alarms: string[] = [];
+  if (activeWorkers === 0 && (queuedTasks > 0 || runningTasks > 0)) alarms.push("无活动 Worker，但队列有任务待处理");
+  if (queuedTasks >= backlog) alarms.push(`队列积压：${queuedTasks} 个任务排队（阈值 ${backlog}）`);
+  if (oldestQueuedSec >= oldestAlarm && activeWorkers === 0) alarms.push(`最久任务已排队 ${oldestQueuedSec}s 且无 Worker 消费`);
+  if (staleWorkers > 0) alarms.push(`${staleWorkers} 个 Worker 心跳超时`);
+  if (deadRecent >= 20) alarms.push(`近 1 小时死信 ${deadRecent} 个，疑似系统性故障`);
+
+  return { activeWorkers, staleWorkers, queuedTasks, runningTasks, oldestQueuedSec, deadRecent, alarms };
+}

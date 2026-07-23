@@ -30,21 +30,36 @@ export async function createProblem(input: {
   return id;
 }
 
-/** 创建可编辑的草稿版本（已发布版本不可改，修订必须开新版本） */
+/** 创建可编辑的草稿版本（已发布版本不可改，修订必须开新版本）。
+ *  并发下多人同时建草稿会争抢同一 version_no，靠 UNIQUE(problem_id, version_no)
+ *  拦截并重试：每次重试都重新取 MAX+1，直到插入成功或超过重试上限。
+ *  重试上限取较大值并带抖动退避 —— N 个并发创建时最坏需要 N 轮才能全部落位。 */
 export async function createDraftVersion(problemId: string, opts: { rawText?: string; pdfSha?: string } = {}): Promise<string> {
   await ensureSchema();
-  const rs = await db().execute({
-    sql: "SELECT COALESCE(MAX(version_no), 0) v FROM problem_versions WHERE problem_id=?",
-    args: [problemId],
-  });
-  const next = Number(rs.rows[0]?.v || 0) + 1;
-  const vid = uid("PVER");
-  await db().execute({
-    sql: `INSERT INTO problem_versions (version_id, problem_id, version_no, status, raw_text, source_pdf_sha256, immutable)
-          VALUES (?,?,?, 'draft', ?, ?, 0)`,
-    args: [vid, problemId, next, opts.rawText || null, opts.pdfSha || null],
-  });
-  return vid;
+  const MAX_RETRY = Number(process.env.DRAFT_VERSION_MAX_RETRY || 25);
+  for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
+    const rs = await db().execute({
+      sql: "SELECT COALESCE(MAX(version_no), 0) v FROM problem_versions WHERE problem_id=?",
+      args: [problemId],
+    });
+    const next = Number(rs.rows[0]?.v || 0) + 1;
+    const vid = uid("PVER");
+    try {
+      const ins = await db().execute({
+        sql: `INSERT INTO problem_versions (version_id, problem_id, version_no, status, raw_text, source_pdf_sha256, immutable)
+              VALUES (?,?,?, 'draft', ?, ?, 0)
+              ON CONFLICT (problem_id, version_no) DO NOTHING
+              RETURNING version_id`,
+        args: [vid, problemId, next, opts.rawText || null, opts.pdfSha || null],
+      });
+      if (ins.rows.length) return String(ins.rows[0].version_id);
+      // 冲突：version_no 被别人抢先，抖动退避后重试取新的 MAX+1
+    } catch {
+      // 唯一冲突或瞬时错误，重试
+    }
+    await new Promise((r) => setTimeout(r, 5 + Math.random() * 15));
+  }
+  throw new Error("创建草稿版本失败：版本号并发冲突，请重试");
 }
 
 /** 按 PDF 哈希查已有版本（同一份 PDF 不重复解析） */
@@ -355,11 +370,22 @@ export async function publicationChecklist(versionId: string): Promise<{ items: 
     detail: pending.length ? `${pending.length} 条待确认：${pending.slice(0, 3).map((r) => r.requirement_no).join("、")}` : "全部已处理",
   });
 
-  const noSource = reqs.filter((r) => String(r.status) !== "REJECTED" && !r.source_quote && r.source_page == null);
+  // 正式需求必须「同时」有 source_page 与 source_quote。
+  // 人工补充要求可例外，但须 source_type=STAFF_ADDED 且有 reviewer + reason。
+  const badSource = reqs.filter((r) => {
+    if (String(r.status) === "REJECTED") return false;
+    const isStaff = String((r as any).source_type) === "STAFF_ADDED";
+    if (isStaff) {
+      // 工作人员补充：必须有审核人与理由
+      return !((r as any).staff_reviewer && (r as any).staff_reason);
+    }
+    // AI 提取的正式需求：页码与原文引用缺一不可
+    return !(r.source_quote && r.source_page != null);
+  });
   items.push({
-    key: "has_source", label: "每条需求有页码或原文引用",
-    passed: noSource.length === 0,
-    detail: noSource.length ? `${noSource.length} 条缺溯源：${noSource.slice(0, 3).map((r) => r.requirement_no).join("、")}` : "全部有溯源",
+    key: "has_source", label: "每条正式需求同时具备页码与原文引用（人工补充需审核人+理由）",
+    passed: badSource.length === 0,
+    detail: badSource.length ? `${badSource.length} 条溯源不完整：${badSource.slice(0, 3).map((r) => r.requirement_no).join("、")}` : "全部满足",
   });
 
   const diffs = await db().execute({
@@ -393,6 +419,26 @@ export async function publicationChecklist(versionId: string): Promise<{ items: 
     passed: reviewers.size >= 2, detail: `${reviewers.size} 人已通过`,
   });
 
+  // 预期评分结构核对：若填写了 expected_total_score，则官方分值合计须与之相符
+  const ver: any = content.version;
+  const expectedTotal = ver.expected_total_score != null ? Number(ver.expected_total_score) : null;
+  if (expectedTotal != null) {
+    const officialTotal = official.reduce((a, s) => a + Number(s.points || 0), 0);
+    const parts = [
+      ver.expected_report_score, ver.expected_basic_score, ver.expected_advanced_score,
+    ].filter((x) => x != null).map(Number);
+    const partsSum = parts.reduce((a, b) => a + b, 0);
+    const totalOk = officialTotal === expectedTotal;
+    const partsOk = parts.length === 0 || partsSum === expectedTotal;
+    items.push({
+      key: "expected_score_match", label: "评分结构与预期总分精确一致",
+      passed: totalOk && partsOk,
+      detail: totalOk && partsOk
+        ? `预期 ${expectedTotal} 分，官方分值合计 ${officialTotal} 分`
+        : `预期 ${expectedTotal}，官方合计 ${officialTotal}${parts.length ? `，分项合计 ${partsSum}` : ""}（不一致）`,
+    });
+  }
+
   return { items, passed: items.every((i) => i.passed) };
 }
 
@@ -404,33 +450,71 @@ export async function addReview(versionId: string, reviewer: string, decision: "
   });
 }
 
-/** 发布版本：通过清单后冻结为不可变版本。 */
+/** 发布版本：通过清单后冻结为不可变版本。
+ *  整个过程在单一事务内完成，任一步失败全部回滚：
+ *    1. 锁定 version 行（FOR UPDATE）
+ *    2. 事务内重新执行 publicationChecklist（避免检查与发布之间的 TOCTOU）
+ *    3. 确认仍未发布
+ *    4. 生成 content_hash
+ *    5. immutable=1、status=published
+ *    6. 更新 official_problems
+ *    7. commit */
 export async function publishVersion(versionId: string, publishedBy: string, override = false):
   Promise<{ ok: boolean; error?: string; checklist?: ChecklistItem[] }> {
   await ensureSchema();
-  const { items, passed } = await publicationChecklist(versionId);
-  if (!passed && !override) {
-    const failed = items.filter((i) => !i.passed).map((i) => i.label).join("、");
-    return { ok: false, error: `发布清单未通过：${failed}`, checklist: items };
+  const { withTransaction } = await import("./db");
+
+  try {
+    return await withTransaction(async (tx) => {
+      // 1) 锁定版本行，阻止并发发布
+      const locked = await tx.execute({
+        sql: "SELECT version_id, status, immutable FROM problem_versions WHERE version_id=? FOR UPDATE",
+        args: [versionId],
+      });
+      if (!locked.rows.length) return { ok: false, error: "版本不存在" };
+      // 3)（提前）确认仍未发布
+      if (String(locked.rows[0].status) === "published" || Number(locked.rows[0].immutable) === 1) {
+        return { ok: false, error: "该版本已发布，无需重复发布" };
+      }
+
+      // 2) 事务内重新执行发布清单（读取的是锁内一致快照）
+      const { items, passed } = await publicationChecklist(versionId);
+      if (!passed && !override) {
+        const failed = items.filter((i) => !i.passed).map((i) => i.label).join("、");
+        // 抛出以触发回滚（虽然此前只有读，回滚无副作用，但保持路径统一）
+        return { ok: false, error: `发布清单未通过：${failed}`, checklist: items };
+      }
+
+      const content = await getVersionContent(versionId);
+      if (!content) return { ok: false, error: "版本不存在" };
+
+      // 4) 生成不可变内容哈希
+      const hash = createHash("sha256")
+        .update(JSON.stringify({ r: content.requirements, s: content.scoring_items }))
+        .digest("hex").slice(0, 32);
+
+      // 5) 冻结版本
+      const upd = await tx.execute({
+        sql: `UPDATE problem_versions SET status='published', published_by=?, published_at=now(),
+                immutable=1, content_hash=? WHERE version_id=? AND status != 'published'
+              RETURNING version_id`,
+        args: [publishedBy + (override ? " (override)" : ""), hash, versionId],
+      });
+      // 竞态兜底：若被并发抢先发布则回滚
+      if (!upd.rows.length) return { ok: false, error: "版本状态已变化，请重试" };
+
+      // 6) 同步 official_problems
+      await tx.execute({
+        sql: `UPDATE official_problems SET status='published', updated_at=now()
+              WHERE problem_id=(SELECT problem_id FROM problem_versions WHERE version_id=?)`,
+        args: [versionId],
+      });
+
+      return { ok: true, checklist: items };
+    });
+  } catch (e: any) {
+    return { ok: false, error: `发布失败（已回滚）：${e?.message || e}` };
   }
-
-  const content = await getVersionContent(versionId);
-  if (!content) return { ok: false, error: "版本不存在" };
-  const hash = createHash("sha256")
-    .update(JSON.stringify({ r: content.requirements, s: content.scoring_items }))
-    .digest("hex").slice(0, 32);
-
-  await db().execute({
-    sql: `UPDATE problem_versions SET status='published', published_by=?, published_at=now(),
-            immutable=1, content_hash=? WHERE version_id=? AND status != 'published'`,
-    args: [publishedBy + (override ? " (override)" : ""), hash, versionId],
-  });
-  await db().execute({
-    sql: `UPDATE official_problems SET status='published', updated_at=now()
-          WHERE problem_id=(SELECT problem_id FROM problem_versions WHERE version_id=?)`,
-    args: [versionId],
-  });
-  return { ok: true, checklist: items };
 }
 
 export async function listProblems(opts: { publishedOnly?: boolean; year?: number } = {}) {

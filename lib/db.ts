@@ -37,6 +37,63 @@ export function db() {
   };
 }
 
+/** 在单一数据库事务中执行一组语句（真事务：全成功或全回滚）。
+ *
+ *  Neon HTTP 的 neon() 是无状态的，BEGIN/COMMIT 分开发不共享会话，无法跨语句成事务。
+ *  因此生产环境用 neon 的 Pool（有状态会话，支持真正的 BEGIN/COMMIT）。
+ *  测试环境（pglite）本身有状态，直接在同一连接上 BEGIN/COMMIT 即可。
+ *
+ *  回调内 execute 立即执行并返回结果（可读取上一步 RETURNING），
+ *  异常时整体 ROLLBACK。 */
+export async function withTransaction<T>(fn: (tx: {
+  execute(stmt: Stmt): Promise<{ rows: Record<string, unknown>[] }>;
+}) => Promise<T>): Promise<T> {
+  // pglite（测试）：conn() 已是有状态连接，直接用它跑 BEGIN/COMMIT
+  if (process.env.PGLITE_TEST === "1" || !process.env.DATABASE_URL?.startsWith("postgres")) {
+    return txOnConn(conn(), fn);
+  }
+  // 生产：用 neon Pool 取一个有状态 client
+  const { Pool } = await import("@neondatabase/serverless");
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const client = await pool.connect();
+  const clientConn = {
+    query: async (sql: string, args: unknown[] = []) => {
+      const r = await client.query(sql, args as any[]);
+      return r.rows;
+    },
+  };
+  try {
+    return await txOnConn(clientConn, fn);
+  } finally {
+    client.release();
+    await pool.end().catch(() => {});
+  }
+}
+
+async function txOnConn<T>(c: any, fn: (tx: {
+  execute(stmt: Stmt): Promise<{ rows: Record<string, unknown>[] }>;
+}) => Promise<T>): Promise<T> {
+  const run = async (sql: string, args: unknown[] = []) => {
+    const rows = await c.query(toPgPlaceholders(sql), args);
+    return { rows: (Array.isArray(rows) ? rows : (rows?.rows ?? [])) as Record<string, unknown>[] };
+  };
+  const tx = {
+    async execute(stmt: Stmt) {
+      const s = typeof stmt === "string" ? { sql: stmt, args: [] as unknown[] } : stmt;
+      return run(s.sql, (s.args ?? []) as unknown[]);
+    },
+  };
+  await run("BEGIN");
+  try {
+    const result = await fn(tx);
+    await run("COMMIT");
+    return result;
+  } catch (e) {
+    await run("ROLLBACK").catch(() => { /* 回滚失败也要抛原始错误 */ });
+    throw e;
+  }
+}
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS modules (
   id TEXT PRIMARY KEY,
