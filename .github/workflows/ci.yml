@@ -65,7 +65,9 @@ jobs:
           cache: npm
 
       - name: Install
-        run: npm ci
+        run: |
+          mkdir -p reports
+          npm ci
 
       # Worker 启动冒烟测试用它跑真实进程，与 Railway 的 Node 20 对齐
       - name: Expose Node binary for startup smoke test
@@ -87,6 +89,7 @@ jobs:
           mkdir -p reports
           set -o pipefail
           NODE20_BIN="$(which node)" npx vitest run tests/worker-startup.test.ts \
+            --reporter=default --reporter=junit --outputFile=reports/junit-worker-startup.xml \
             2>&1 | tee reports/worker-startup.log
 
       # 轻量 queue smoke：每次 push/PR 都跑，目标几分钟内完成。
@@ -104,6 +107,8 @@ jobs:
           # 明确关闭 pglite：本步骤必须打真实数据库
           PGLITE_TEST: "0"
           ENABLE_MOCK_PROVIDER: "1"
+          # CI 专用的固定管理员 Key：让压测能读 /api/ready 拿到服务端快照
+          ADMIN_API_KEY: ci-smoke-admin-key
         run: |
           set -o pipefail
           mkdir -p reports
@@ -117,7 +122,8 @@ jobs:
           echo "::endgroup::"
 
           # 后台启动服务并记录 PID，便于随后清理
-          npx next start -p 3000 > reports/server.log 2>&1 &
+          ADMIN_API_KEY=ci-smoke-admin-key \
+            npx next start -p 3000 > reports/server.log 2>&1 &
           echo $! > reports/server.pid
           echo "next start pid=$(cat reports/server.pid)"
 
