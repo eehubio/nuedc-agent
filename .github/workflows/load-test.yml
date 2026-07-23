@@ -1,0 +1,165 @@
+name: Load Test (heavy)
+
+# 重型验证：不在每次 push 上跑，避免拖慢日常 CI。
+#   - 手工触发（workflow_dispatch）：可自定义规模
+#   - 每日定时（nightly）：固定规模回归
+on:
+  workflow_dispatch:
+    inputs:
+      queue_users:
+        description: "queue-only 用户数"
+        required: false
+        default: "100"
+      mock_users:
+        description: "mock-provider 用户数"
+        required: false
+        default: "300"
+  schedule:
+    # 每天 UTC 18:00（北京时间次日 02:00）
+    - cron: "0 18 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  heavy-load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_USER: ci
+          POSTGRES_DB: nuedc_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/nuedc_ci
+      PGLITE_TEST: "0"
+      ENABLE_MOCK_PROVIDER: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+      BASE_URL: http://127.0.0.1:3000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Migrate
+        run: npm run db:init
+
+      - name: Build
+        run: npx next build > reports-build.log 2>&1 || (tail -60 reports-build.log; exit 1)
+
+      - name: Start server
+        run: |
+          set -o pipefail
+          mkdir -p reports
+          npx next start -p 3000 > reports/server.log 2>&1 &
+          echo $! > reports/server.pid
+          ready=0
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:3000/api/health > /dev/null; then ready=1; break; fi
+            if ! kill -0 "$(cat reports/server.pid)" 2>/dev/null; then
+              echo "❌ next start 进程已退出"; break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "❌ 服务健康检查在 60 次后仍失败"
+            tail -80 reports/server.log || true
+            exit 1
+          fi
+          echo "✓ 服务就绪"
+
+      - name: Readiness before
+        run: curl -sf "$BASE_URL/api/ready" -o reports/readiness-before.json || true
+
+      # 启动一个后台 Worker，让 mock-provider 模式的任务真正被消费
+      - name: Start worker
+        run: |
+          mkdir -p reports
+          WORKER_ID=ci-worker-1 npx tsx scripts/agent-worker.mts > reports/worker.log 2>&1 &
+          echo $! > reports/worker.pid
+          sleep 5
+          tail -5 reports/worker.log || true
+
+      - name: Queue-only (heavy)
+        env:
+          LOAD_MODE: queue-only
+          LOAD_USERS: ${{ github.event.inputs.queue_users || '100' }}
+          LOAD_RAMP_SEC: "20"
+          LOAD_OUT: reports/queue-only.json
+        run: |
+          set -o pipefail
+          npx tsx scripts/load-test.mts 2>&1 | tee reports/queue-only-summary.txt
+          node scripts/assert-load-result.mjs reports/queue-only.json
+
+      - name: Mock-provider (heavy)
+        env:
+          LOAD_MODE: mock-provider
+          LOAD_USERS: ${{ github.event.inputs.mock_users || '300' }}
+          LOAD_RAMP_SEC: "60"
+          LOAD_TIMEOUT_SEC: "600"
+          ALLOW_MOCK_ASSUMED: "1"
+          LOAD_OUT: reports/mock-provider.json
+        run: |
+          set -o pipefail
+          npx tsx scripts/load-test.mts 2>&1 | tee reports/mock-provider-summary.txt
+          node scripts/assert-load-result.mjs reports/mock-provider.json
+
+      - name: Readiness after
+        if: always()
+        run: curl -sf "$BASE_URL/api/ready" -o reports/readiness-after.json || true
+
+      - name: Collect DB stats
+        if: always()
+        run: |
+          {
+            echo "=== lease reclaim（重试过的任务）==="
+            PGPASSWORD=ci psql -h 127.0.0.1 -U ci -d nuedc_ci -c \
+              "SELECT COUNT(*) FROM agent_tasks WHERE attempts > 1;" || true
+            echo "=== duplicate artifacts ==="
+            PGPASSWORD=ci psql -h 127.0.0.1 -U ci -d nuedc_ci -c \
+              "SELECT project_id, type, version, COUNT(*) FROM artifacts GROUP BY 1,2,3 HAVING COUNT(*)>1;" || true
+            echo "=== 任务状态分布 ==="
+            PGPASSWORD=ci psql -h 127.0.0.1 -U ci -d nuedc_ci -c \
+              "SELECT status, COUNT(*) FROM agent_tasks GROUP BY status ORDER BY 2 DESC;" || true
+          } > reports/db-stats.txt 2>&1
+          cat reports/db-stats.txt
+
+      - name: Stop worker and server
+        if: always()
+        run: |
+          for f in reports/worker.pid reports/server.pid; do
+            if [ -f "$f" ]; then
+              pid="$(cat $f)"
+              kill "$pid" 2>/dev/null || true
+              sleep 2
+              kill -9 "$pid" 2>/dev/null || true
+            fi
+          done
+          pkill -f "next start -p 3000" 2>/dev/null || true
+          pkill -f "agent-worker.mts" 2>/dev/null || true
+
+      - name: Upload load test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-reports
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 30

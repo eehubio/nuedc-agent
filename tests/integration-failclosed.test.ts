@@ -176,10 +176,30 @@ describe("三、readiness 区分 error 与 warning", () => {
 describe("四、CI 关键冒烟真正阻断", () => {
   const ci = readFileSync(".github/workflows/ci.yml", "utf8");
 
-  it("Worker startup 与 queue-only 冒烟不再带 || true", () => {
-    const smoke = ci.slice(ci.indexOf("Worker startup smoke"), ci.indexOf("- name: Build"));
-    expect(smoke).not.toMatch(/\|\| true/);
+  it("Worker startup 与 queue smoke 的关键命令不再吞掉失败", () => {
+    const smoke = ci.slice(ci.indexOf("Worker startup smoke"), ci.indexOf("- name: Stop server"));
     expect(smoke).toMatch(/set -o pipefail/);
+    // 关键命令（压测、验收、迁移、构建）不得带 || true
+    for (const cmd of [
+      "npx tsx scripts/load-test.mts",
+      "node scripts/assert-load-result.mjs",
+      "npm run db:init",
+      "npx vitest run tests/worker-startup.test.ts",
+    ]) {
+      const at = smoke.indexOf(cmd);
+      expect(at, `缺少关键命令：${cmd}`).toBeGreaterThan(-1);
+      const line = smoke.slice(at, smoke.indexOf("\n", at));
+      expect(line, `${cmd} 不得吞掉失败`).not.toMatch(/\|\| true/);
+    }
+    // 健康检查失败必须 exit 1，而不是继续跑压测
+    expect(smoke).toMatch(/exit 1/);
+  });
+
+  it("服务清理与日志上传不因失败中断（清理步骤允许 || true）", () => {
+    const stop = ci.slice(ci.indexOf("- name: Stop server"), ci.indexOf("- name: Build"));
+    expect(stop).toMatch(/if: always\(\)/);
+    // 清理本身失败不应让 job 红灯
+    expect(stop).toMatch(/\|\| true/);
   });
 
   it("queue-only 结果经过验收门禁", () => {

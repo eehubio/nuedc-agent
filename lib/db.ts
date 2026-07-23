@@ -19,6 +19,51 @@ export interface Executor {
 
 let _sql: any = null;
 
+/** 是否为 Neon 云端点。
+ *  neon() 是 HTTP 驱动，只能连 Neon 的 /sql API —— 它会把 host 拼成
+ *  https://api.<host>/sql。指向标准 Postgres（如 CI 里的 127.0.0.1:5432）
+ *  会得到 "Failed to parse URL from https://api.0.0.1/sql" 这类错误。
+ *  因此非 Neon 主机必须改用基于 TCP/WebSocket 的 Pool。 */
+function isNeonHost(url: string): boolean {
+  try {
+    const h = new URL(url).hostname;
+    return /(^|\.)neon\.(tech|build)$/i.test(h) || /neon\.tech$/i.test(h);
+  } catch {
+    return false;
+  }
+}
+
+/** 标准 Postgres（CI / 自建）走 node-postgres 的 Pool。
+ *  注意不能用 @neondatabase/serverless 的 Pool —— 它基于 WebSocket，
+ *  同样连不上普通的 TCP Postgres。pg 只在 devDependencies，
+ *  生产（Vercel + Neon）永远走上面的 HTTP 分支，不会加载它。 */
+function pgPoolConn(url: string) {
+  let Pool: any;
+  try {
+    ({ Pool } = require("pg"));
+  } catch {
+    throw new Error(
+      "DATABASE_URL 指向非 Neon 主机，需要 node-postgres 驱动。请安装：npm i -D pg"
+    );
+  }
+  const pool = new Pool({
+    connectionString: url,
+    max: Number(process.env.DB_POOL_MAX || 10),
+    idleTimeoutMillis: Number(process.env.DB_POOL_IDLE_MS || 30_000),
+    connectionTimeoutMillis: Number(process.env.DB_POOL_CONN_TIMEOUT_MS || 10_000),
+  });
+  pool.on?.("error", (e: any) => console.error("[pg pool] idle client error:", e?.message || e));
+  _queryPool = pool;
+  return {
+    query: async (sql: string, args: unknown[] = []) => {
+      const r = await pool.query(sql, args as any[]);
+      return r.rows;
+    },
+  };
+}
+
+let _queryPool: any = null;
+
 function conn() {
   if (_sql) return _sql;
   const url = process.env.DATABASE_URL;
@@ -27,7 +72,14 @@ function conn() {
       "缺少 DATABASE_URL。请在 Neon 控制台复制连接串（postgresql://...），本地写入 .env.local，线上配置到 Vercel 环境变量。"
     );
   }
-  _sql = neon(url);
+  // 测试环境（pglite）：neon 模块已被 mock 成进程内 Postgres，必须走这条分支，
+  // 否则会被当成"非 Neon 主机"而去连真实 TCP（测试里没有这样的库）。
+  if (process.env.PGLITE_TEST === "1") {
+    _sql = neon(url);
+    return _sql;
+  }
+  // Neon 云端用 HTTP 驱动（Serverless 友好）；其余用 node-postgres（CI / 自建）
+  _sql = isNeonHost(url) ? neon(url) : pgPoolConn(url);
   return _sql;
 }
 
@@ -60,8 +112,8 @@ export function txPool() {
   if (_pool) return _pool;
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("缺少 DATABASE_URL");
-  // 延迟 require，避免在不需要事务的路径上加载 Pool
-  const { Pool } = require("@neondatabase/serverless");
+  // 与 conn() 同理：Neon 云端用其 WebSocket Pool，标准 Postgres 用 node-postgres
+  const { Pool } = isNeonHost(url) ? require("@neondatabase/serverless") : require("pg");
   _pool = new Pool({
     connectionString: url,
     max: Number(process.env.DB_POOL_MAX || 10),                     // 连接上限
@@ -77,6 +129,11 @@ export function txPool() {
 
 /** 进程退出时关闭连接池（Worker 的 SIGTERM 处理里调用） */
 export async function closeTxPool(): Promise<void> {
+  if (_queryPool) {
+    try { await _queryPool.end(); } catch { /* 忽略 */ }
+    _queryPool = null;
+    _sql = null;
+  }
   if (!_pool || _poolClosing) return;
   _poolClosing = true;
   try { await _pool.end(); } catch { /* 关闭失败不阻塞退出 */ }

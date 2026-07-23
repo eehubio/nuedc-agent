@@ -89,28 +89,76 @@ jobs:
           NODE20_BIN="$(which node)" npx vitest run tests/worker-startup.test.ts \
             2>&1 | tee reports/worker-startup.log
 
-      # queue-only 冒烟：功能失败必须红灯（性能数字仅作为 Artifact 参考）
-      - name: Queue-only smoke (blocking)
+      # 轻量 queue smoke：每次 push/PR 都跑，目标几分钟内完成。
+      # 只验证 DB 初始化、服务启动、入队、去重、配额与查询；不调用真实 Provider。
+      - name: Queue smoke (light, blocking)
         env:
           LOAD_MODE: queue-only
-          LOAD_USERS: "50"
-          LOAD_RAMP_SEC: "5"
+          LOAD_USERS: "15"
+          LOAD_RAMP_SEC: "3"
+          LOAD_TIMEOUT_SEC: "60"
           LOAD_OUT: reports/load-test.json
           BASE_URL: http://127.0.0.1:3000
-          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/nuedc_ci?sslmode=disable
+          # 标准 Postgres（非 Neon）—— lib/db.ts 会自动改用 node-postgres 驱动
+          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/nuedc_ci
+          # 明确关闭 pglite：本步骤必须打真实数据库
+          PGLITE_TEST: "0"
           ENABLE_MOCK_PROVIDER: "1"
         run: |
-          mkdir -p reports
           set -o pipefail
+          mkdir -p reports
+
+          echo "::group::数据库迁移"
           npm run db:init
+          echo "::endgroup::"
+
+          echo "::group::构建"
           npx next build > reports/build.log 2>&1
+          echo "::endgroup::"
+
+          # 后台启动服务并记录 PID，便于随后清理
           npx next start -p 3000 > reports/server.log 2>&1 &
+          echo $! > reports/server.pid
+          echo "next start pid=$(cat reports/server.pid)"
+
+          # 健康检查：60 次仍失败必须 exit 1，绝不带着坏服务继续跑压测
+          ready=0
           for i in $(seq 1 60); do
-            curl -sf http://127.0.0.1:3000/api/health > /dev/null && break
+            if curl -sf http://127.0.0.1:3000/api/health > /dev/null; then ready=1; break; fi
+            # 服务若已崩溃就不必再等
+            if ! kill -0 "$(cat reports/server.pid)" 2>/dev/null; then
+              echo "❌ next start 进程已退出"
+              break
+            fi
             sleep 2
           done
+          if [ "$ready" -ne 1 ]; then
+            echo "❌ 服务健康检查在 60 次后仍失败，终止本步骤"
+            echo "----- server.log (tail 80) -----"
+            tail -80 reports/server.log || true
+            exit 1
+          fi
+          echo "✓ 服务就绪"
+
+          # 确认服务连的是真实 Postgres（而不是意外回退）
+          curl -sf http://127.0.0.1:3000/api/ready | head -c 400 || true
+          echo ""
+
           npx tsx scripts/load-test.mts 2>&1 | tee reports/load-test-summary.txt
           node scripts/assert-load-result.mjs reports/load-test.json
+
+      # 无论上一步成败都要停掉服务，避免 job 结束时残留进程
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f reports/server.pid ]; then
+            pid="$(cat reports/server.pid)"
+            kill "$pid" 2>/dev/null || true
+            sleep 2
+            kill -9 "$pid" 2>/dev/null || true
+            echo "已停止 next start (pid=$pid)"
+          fi
+          pkill -f "next start -p 3000" 2>/dev/null || true
 
       - name: Build
         run: npm run build
