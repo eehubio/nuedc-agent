@@ -32,8 +32,11 @@ export async function createProblem(input: {
 
 /** 创建可编辑的草稿版本（已发布版本不可改，修订必须开新版本）。
  *  并发下多人同时建草稿会争抢同一 version_no，靠 UNIQUE(problem_id, version_no)
- *  拦截并重试：每次重试都重新取 MAX+1，直到插入成功或超过重试上限。
- *  重试上限取较大值并带抖动退避 —— N 个并发创建时最坏需要 N 轮才能全部落位。 */
+ *  拦截并重试。
+ *
+ *  只有「真正的版本号冲突」才重试：其余错误（网络、权限、外键、schema、
+ *  SQL 语法、数据库不可用）必须立即抛出真实错误 —— 否则会重试 25 次后
+ *  把一个"数据库连不上"伪装成"版本号并发冲突"，掩盖真实故障。 */
 export async function createDraftVersion(problemId: string, opts: { rawText?: string; pdfSha?: string } = {}): Promise<string> {
   await ensureSchema();
   const MAX_RETRY = Number(process.env.DRAFT_VERSION_MAX_RETRY || 25);
@@ -53,13 +56,24 @@ export async function createDraftVersion(problemId: string, opts: { rawText?: st
         args: [vid, problemId, next, opts.rawText || null, opts.pdfSha || null],
       });
       if (ins.rows.length) return String(ins.rows[0].version_id);
-      // 冲突：version_no 被别人抢先，抖动退避后重试取新的 MAX+1
-    } catch {
-      // 唯一冲突或瞬时错误，重试
+      // ON CONFLICT DO NOTHING 命中：version_no 被别人抢先，抖动退避后重试
+    } catch (e: any) {
+      if (!isVersionNoConflict(e)) throw e;   // 非版本号冲突：立即抛出真实错误
+      // 唯一冲突（ON CONFLICT 未覆盖到的路径）：同样重试
     }
     await new Promise((r) => setTimeout(r, 5 + Math.random() * 15));
   }
   throw new Error("创建草稿版本失败：版本号并发冲突，请重试");
+}
+
+/** 判定是否为 problem_versions(problem_id, version_no) 的唯一约束冲突。
+ *  仅此一种情况值得重试；其他错误重试只会浪费时间并掩盖真实故障。 */
+function isVersionNoConflict(e: any): boolean {
+  const code = String(e?.code || "");
+  if (code !== "23505") return false;                 // 必须是 unique_violation
+  const hay = `${e?.constraint || ""} ${e?.detail || ""} ${e?.message || ""}`;
+  // 约束名或冲突列必须指向 problem_versions 的版本号唯一约束
+  return /problem_versions/i.test(hay) && /version_no/i.test(hay);
 }
 
 /** 按 PDF 哈希查已有版本（同一份 PDF 不重复解析） */
@@ -364,6 +378,16 @@ export async function saveDiffs(versionId: string, problemId: string, diffs: Dif
 
 /* ============ 发布清单与不可变版本 ============ */
 
+/** 发布门禁检查本身失败（区别于「检查通过但不合格」）。
+ *  任何门禁查询出错都必须走这条路径 —— 绝不能把故障当成 passed。 */
+export class PublicationCheckError extends Error {
+  readonly code = "PUBLICATION_CHECK_FAILED";
+  constructor(message: string) {
+    super(message);
+    this.name = "PublicationCheckError";
+  }
+}
+
 /** 清单项。severity=error 阻断发布；severity=warning 仅提示，不阻断。 */
 export interface ChecklistItem { key: string; label: string; passed: boolean; detail: string; severity: "error" | "warning" }
 
@@ -373,7 +397,13 @@ export async function publicationChecklist(versionId: string, executor?: Executo
   // 同 getVersionContent：传入 tx 时不得再访问全局 db
   if (!executor) await ensureSchema();
   const ex = executor ?? db();
-  const content = await getVersionContent(versionId, ex);
+  // 内容读取失败同样必须 fail closed：不能因为读不到就当作「没有未确认需求」
+  let content;
+  try {
+    content = await getVersionContent(versionId, ex);
+  } catch (e: any) {
+    throw new PublicationCheckError(`发布门禁检查失败（版本内容读取）：${e?.message || e}`);
+  }
   const items: ChecklistItem[] = [];
   if (!content) return { items: [{ key: "exists", label: "版本存在", passed: false, detail: "版本不存在", severity: "error" }], passed: false };
 
@@ -409,11 +439,21 @@ export async function publicationChecklist(versionId: string, executor?: Executo
     severity: "error",
   });
 
-  const diffs = await ex.execute({
-    sql: "SELECT COUNT(*) n FROM problem_review_diffs WHERE version_id=? AND resolved=0 AND severity='critical'",
-    args: [versionId],
-  }).catch(() => ({ rows: [{ n: 0 }] as any[] }));
-  const crit = Number((diffs.rows[0] as any)?.n || 0);
+  // 发布门禁 fail closed：查询失败绝不能默认为「无关键差异」——
+  // 那等于把数据库故障伪装成检查通过，可能放行有问题的官方题目。
+  // 这里直接抛出，由 publishVersion 捕获并整体回滚。
+  let crit: number;
+  try {
+    const diffs = await ex.execute({
+      sql: "SELECT COUNT(*) n FROM problem_review_diffs WHERE version_id=? AND resolved=0 AND severity='critical'",
+      args: [versionId],
+    });
+    crit = Number((diffs.rows[0] as any)?.n || 0);
+  } catch (e: any) {
+    throw new PublicationCheckError(
+      `发布门禁检查失败（关键差异查询）：${e?.message || e}`,
+    );
+  }
   items.push({ key: "no_critical_diff", label: "无未确认的关键差异", passed: crit === 0, detail: crit ? `${crit} 处指标/分值差异待确认` : "无", severity: "error" });
 
   const amb = content.notes.filter((n) => String(n.kind) === "ambiguity" && Number(n.resolved) === 0);
@@ -543,7 +583,7 @@ export async function addReview(versionId: string, reviewer: string, decision: "
  *    6. 更新 official_problems
  *    7. commit */
 export async function publishVersion(versionId: string, publishedBy: string, override = false):
-  Promise<{ ok: boolean; error?: string; checklist?: ChecklistItem[] }> {
+  Promise<{ ok: boolean; error?: string; error_code?: string; checklist?: ChecklistItem[] }> {
   await ensureSchema();
 
   try {
@@ -596,6 +636,11 @@ export async function publishVersion(versionId: string, publishedBy: string, ove
       return { ok: true, checklist: items };
     });
   } catch (e: any) {
+    // 门禁检查本身失败（数据库故障等）：整体已回滚，返回结构化错误码。
+    // 与「检查通过但不合格」严格区分 —— 后者是业务结论，前者是系统故障。
+    if (e instanceof PublicationCheckError) {
+      return { ok: false, error: `${e.message}（已回滚，未发布）`, error_code: "PUBLICATION_CHECK_FAILED" };
+    }
     return { ok: false, error: `发布失败（已回滚）：${e?.message || e}` };
   }
 }

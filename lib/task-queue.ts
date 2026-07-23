@@ -212,6 +212,19 @@ export async function workerDeregister(workerId: string): Promise<void> {
   await db().execute({ sql: "DELETE FROM worker_heartbeats WHERE worker_id=?", args: [workerId] }).catch(() => {});
 }
 
+/** 清理超过 24 小时未续期的心跳记录。
+ *  Worker 崩溃或容器被重建（hostname 变化）会留下再也不会更新的行，
+ *  堆积后会让 readiness 一直显示「N 个 Worker 心跳超时」的噪音告警。 */
+export async function pruneStaleHeartbeats(olderThanHours = 24): Promise<number> {
+  const rs = await db().execute({
+    sql: `DELETE FROM worker_heartbeats
+          WHERE last_beat_at < now() - (? || ' hours')::interval
+          RETURNING worker_id`,
+    args: [String(olderThanHours)],
+  }).catch(() => ({ rows: [] as any[] }));
+  return rs.rows.length;
+}
+
 export interface QueueHealth {
   activeWorkers: number;      // 心跳新鲜的 Worker 数
   staleWorkers: number;       // 心跳超时的 Worker 数

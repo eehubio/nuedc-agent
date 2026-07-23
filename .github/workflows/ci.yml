@@ -23,7 +23,22 @@ permissions:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+
+    # queue-only 冒烟需要真实数据库：没有它所有入队都会 503，验收门禁必然红灯
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_USER: ci
+          POSTGRES_DB: nuedc_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     strategy:
       fail-fast: false
@@ -66,23 +81,36 @@ jobs:
         run: npm test -- --reporter=default --reporter=junit --outputFile=reports/junit.xml
         continue-on-error: false
 
-      - name: Worker startup smoke log
-        if: always()
+      # 关键冒烟：必须真正阻断 —— 不再吞掉失败，Worker 起不来就红灯
+      - name: Worker startup smoke (blocking)
         run: |
           mkdir -p reports
+          set -o pipefail
           NODE20_BIN="$(which node)" npx vitest run tests/worker-startup.test.ts \
-            > reports/worker-startup.log 2>&1 || true
-          tail -40 reports/worker-startup.log
+            2>&1 | tee reports/worker-startup.log
 
-      - name: Mock load test summary
-        if: always()
+      # queue-only 冒烟：功能失败必须红灯（性能数字仅作为 Artifact 参考）
+      - name: Queue-only smoke (blocking)
         env:
           LOAD_MODE: queue-only
           LOAD_USERS: "50"
+          LOAD_RAMP_SEC: "5"
+          LOAD_OUT: reports/load-test.json
+          BASE_URL: http://127.0.0.1:3000
+          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/nuedc_ci?sslmode=disable
+          ENABLE_MOCK_PROVIDER: "1"
         run: |
           mkdir -p reports
-          npx tsx scripts/load-test.mts > reports/load-test-summary.txt 2>&1 || true
-          tail -40 reports/load-test-summary.txt
+          set -o pipefail
+          npm run db:init
+          npx next build > reports/build.log 2>&1
+          npx next start -p 3000 > reports/server.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:3000/api/health > /dev/null && break
+            sleep 2
+          done
+          npx tsx scripts/load-test.mts 2>&1 | tee reports/load-test-summary.txt
+          node scripts/assert-load-result.mjs reports/load-test.json
 
       - name: Build
         run: npm run build

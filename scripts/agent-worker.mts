@@ -18,7 +18,7 @@
 import { hostname } from "node:os";
 import "../lib/agents/index";
 import { runAgent, isRetryable, classifyAgentError } from "../lib/agents/base";
-import { claimTask, heartbeat, reclaimExpired, completeTask, failTask, workerHeartbeat, workerDeregister, HEARTBEAT_MS, type ClaimedTask } from "../lib/task-queue";
+import { claimTask, heartbeat, reclaimExpired, completeTask, failTask, workerHeartbeat, workerDeregister, pruneStaleHeartbeats, HEARTBEAT_MS, type ClaimedTask } from "../lib/task-queue";
 import { db, ensureSchema, closeTxPool } from "../lib/db";
 import { metrics } from "../lib/worker-metrics";
 import type { AgentType, ProjectStage } from "../lib/types";
@@ -164,6 +164,9 @@ async function reclaimLoop() {
     try {
       const { requeued, dead } = await reclaimExpired();
       if (requeued || dead) log(`回收：${requeued} 个重新入队，${dead} 个进入死信`);
+      // 顺带清理 24 小时以上的僵尸心跳（容器重建会留下永不更新的行）
+      const pruned = await pruneStaleHeartbeats(24);
+      if (pruned) log(`清理僵尸心跳 ${pruned} 条`);
     } catch (e: any) {
       log("回收循环异常:", String(e?.message || e).slice(0, 120));
     }

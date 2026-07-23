@@ -16,6 +16,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "仅管理员可查看" }, { status: 403 });
   }
 
+  // errors 阻断压测/上线；warnings 仅提示。ready 只由 errors 决定。
+  const errors: string[] = [];
   const warnings: string[] = [];
   const t0 = Date.now();
 
@@ -29,12 +31,12 @@ export async function GET(req: NextRequest) {
     dbOk = true;
   } catch (e: any) {
     dbError = String(e?.message || e).slice(0, 200);
-    warnings.push("数据库不可达");
+    errors.push("数据库不可达");
   }
 
   if (!dbOk) {
     return NextResponse.json({
-      ready: false, database: { ok: false, error: dbError }, warnings,
+      ready: false, database: { ok: false, error: dbError }, errors, warnings,
       latency_ms: Date.now() - t0,
     }, { status: 503 });
   }
@@ -59,8 +61,13 @@ export async function GET(req: NextRequest) {
     stale: Number(r.beat_age_sec || 0) > staleMs,
   }));
   const liveWorkers = workers.filter((w) => !w.stale);
-  if (liveWorkers.length === 0) warnings.push("没有存活的 Worker —— 任务会一直排队不被执行");
-  if (workers.some((w) => w.stale)) warnings.push(`${workers.filter((w) => w.stale).length} 个 Worker 心跳超时`);
+  if (liveWorkers.length === 0) errors.push("没有存活的 Worker —— 任务会一直排队不被执行");
+  const staleCount = workers.filter((w) => w.stale).length;
+  if (staleCount > 0) {
+    // 至少有一个 Live Worker 时，历史 stale 记录只是残留，不阻断
+    const msg = `${staleCount} 个 Worker 心跳超时`;
+    if (liveWorkers.length > 0) warnings.push(msg); else errors.push(msg);
+  }
 
   // —— 队列深度（按优先级） ——
   const q = await db().execute({
@@ -81,7 +88,13 @@ export async function GET(req: NextRequest) {
   }).catch(() => ({ rows: [{ sec: 0 }] as any[] }));
   const oldestQueuedSec = Math.round(Number((oldest.rows[0] as any)?.sec || 0));
   const totalQueued = Object.values(queueByPriority).reduce((a, v) => a + v.queued, 0);
-  if (totalQueued >= Number(process.env.QUEUE_BACKLOG_ALARM || 200)) warnings.push(`队列积压 ${totalQueued}`);
+  const backlogAlarm = Number(process.env.QUEUE_BACKLOG_ALARM || 200);
+  const oldestHardSec = Number(process.env.QUEUE_OLDEST_HARD_SEC || 900);   // 最老任务硬阈值
+  if (oldestQueuedSec >= oldestHardSec) {
+    errors.push(`最老任务已排队 ${oldestQueuedSec}s，超过硬阈值 ${oldestHardSec}s`);
+  }
+  if (totalQueued >= backlogAlarm) errors.push(`队列积压 ${totalQueued}（阈值 ${backlogAlarm}）`);
+  else if (totalQueued >= backlogAlarm * 0.7) warnings.push(`队列接近告警阈值：${totalQueued}/${backlogAlarm}`);
 
   // —— Provider 健康 ——
   let providerHealth: any = null;
@@ -91,7 +104,17 @@ export async function GET(req: NextRequest) {
     providerHealth = await healthSnapshot();
     taskHealth = await taskHealthSnapshot();
   } catch (e: any) {
-    warnings.push("Provider 健康查询失败");
+    errors.push("Provider 健康查询失败 —— 无法确认模型链路可用性");
+  }
+  // 主路由全部不可用 = 阻断；个别备用不健康 = 提示
+  if (Array.isArray(providerHealth) && providerHealth.length) {
+    const usable = providerHealth.filter((p: any) => p.enabled !== false && p.healthy !== false);
+    if (usable.length === 0) errors.push("所有 Provider 均不可用（未配置或已熔断）");
+    else if (usable.length < providerHealth.length) {
+      const bad = providerHealth.filter((p: any) => p.enabled === false || p.healthy === false)
+        .map((p: any) => p.provider || p.id).join("、");
+      warnings.push(`备用 Provider 不健康：${bad}`);
+    }
   }
 
   // —— 当日 token 用量与估算成本 ——
@@ -121,7 +144,9 @@ export async function GET(req: NextRequest) {
   } catch { /* 未初始化 */ }
 
   return NextResponse.json({
-    ready: warnings.length === 0,
+    // ready 只由 errors 决定 —— warnings 不应阻断压测与上线
+    ready: errors.length === 0,
+    errors,
     warnings,
     database: { ok: true },
     tx_pool: pool,
