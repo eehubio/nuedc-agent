@@ -78,7 +78,7 @@ input, textarea, select { font: inherit; color: var(--ink); }
 .workarea { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
 .topbar {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   background: var(--card); border-bottom: 1px solid var(--line);
   padding: 10px 22px; position: sticky; top: 0; z-index: 20;
 }
@@ -99,6 +99,10 @@ input, textarea, select { font: inherit; color: var(--ink); }
 .btn:hover { filter: brightness(1.08); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn.ghost { background: #fff; color: var(--blue-deep); border: 1px solid #c6d6f5; }
+/* 顶部工具栏里的「我的项目」处于当前页时高亮，与流程标签的 active 观感一致 */
+.btn.ghost.active {
+  background: var(--blue-deep); color: #fff; border-color: var(--blue-deep);
+}
 .btn.sm { padding: 5px 12px; font-size: 13px; border-radius: 7px; }
 .btn.ok { background: var(--ok); }
 

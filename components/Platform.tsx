@@ -15,6 +15,8 @@ export const STAGE_LABEL: Record<string, string> = {
   INTEGRATION:"联调", TESTING:"测试", OPTIMIZATION:"优化", REPORTING:"报告", SUBMITTED:"提交",
 };
 
+/** 工作流程步骤：按 方案→模块→连线→BOM→代码→调试→测试→报告 的顺序，
+ *  中间不插入任何非流程入口，避免打断操作节奏。 */
 const NAV = [
   { key: "home",     label: "首页",     icon: "🏠" },
   { key: "solution", label: "方案生成", icon: "🧠" },
@@ -24,9 +26,14 @@ const NAV = [
   { key: "code",     label: "代码生成", icon: "⌨️" },
   { key: "debug",    label: "调试助手", icon: "🔬" },
   { key: "testing",  label: "测试评分", icon: "🧪" },
-  { key: "projects", label: "我的项目", icon: "📁" },
   { key: "report",   label: "报告生成", icon: "📄" },
+  // 「我的项目」不属于流程步骤，单独放在顶部工具栏（见 topbar），
+  // 保留在 NAV 里仅为让侧边栏与路由类型统一，worktabs 会显式过滤掉它。
+  { key: "projects", label: "我的项目", icon: "📁" },
 ] as const;
+
+/** 不参与顶部「工作流程」标签的页面 —— 它们是管理入口，不是流程的一步 */
+const NON_WORKFLOW = ["home", "projects"] as const;
 const NAV_SOON = [
   { label: "仿真验证", icon: "📈" },
   { label: "实验平台", icon: "⚗️" },
@@ -579,12 +586,20 @@ export default function Platform({ embed }: { embed: boolean }) {
             {projects.map((p) => <option key={p.project_id} value={p.project_id}>{p.name}</option>)}
           </select>
           <span className="stagepill">{STAGE_LABEL[stage] || stage}</span>
+          {/* 项目管理入口与项目选择器同区，不占用流程标签位 */}
+          <button
+            className={"btn ghost sm" + (page === "projects" ? " active" : "")}
+            onClick={() => setPage("projects")}
+            aria-current={page === "projects" ? "page" : undefined}
+          >
+            📁 我的项目
+          </button>
           <button className="btn ghost sm" onClick={resetProject}>新建项目</button>
         </header>
 
         {page !== "home" && (
           <nav className="worktabs" aria-label="工作流程">
-            {NAV.filter((n) => n.key !== "home").map((n) => (
+            {NAV.filter((n) => !(NON_WORKFLOW as readonly string[]).includes(n.key)).map((n) => (
               <button key={n.key} className={page === n.key ? "active" : ""} onClick={() => setPage(n.key)}>
                 <span className="ic">{n.icon}</span>{n.label}
               </button>
