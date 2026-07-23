@@ -55,6 +55,19 @@ export interface Provider {
   complete(req: ProviderRequest, model: string): Promise<ProviderResponse>;
 }
 
+/** 把任意异常归一化为 ProviderError。
+ *  AbortSignal 触发时必须返回 CANCELED —— 否则会被归为 UNKNOWN，
+ *  上层看不出是「用户取消」还是「模型出错」，可能误判为可重试。 */
+export function normalizeProviderError(e: any, signal?: AbortSignal): ProviderError {
+  if (e instanceof ProviderError) return e;
+  const name = String(e?.name || "");
+  const msg = String(e?.message || e);
+  if (signal?.aborted || name === "AbortError" || /abort|cancel/i.test(name) || /已取消|aborted|canceled|cancelled/i.test(msg)) {
+    return new ProviderError("请求已取消", "CANCELED", false);
+  }
+  return new ProviderError(msg, "UNKNOWN", false);
+}
+
 /** 从 HTTP 状态与响应体推断标准错误码 */
 export function classifyHttpError(status: number, body: string): ProviderError {
   const snippet = body.slice(0, 300);

@@ -5,7 +5,7 @@ import { recordCall } from "./health";
 import { recordTaskCall, taskTypeHealthy } from "./task-health";
 import { buildCacheKey, cacheGet, cacheSet, cacheDelete, inputHash, taskDedupKey } from "./cache";
 import { recordUsageEvent, checkBudget, estimateCost } from "./telemetry";
-import { ProviderError, type ChatMessage } from "./providers";
+import { ProviderError, normalizeProviderError, type ChatMessage } from "./providers";
 import { getSystemMode, allowsPriority } from "../system-mode";
 import { repairTruncatedJson } from "../json-repair";
 
@@ -272,7 +272,7 @@ export const modelGateway = {
             await recordCall({ provider: provider.id, ok: false, latencyMs, errorCode: "CANCELED" });
             return { ...base, errorCode: "CANCELED", message: "请求已取消", retryCount, fallbackUsed, latency: Date.now() - t0 };
           }
-          const pe = e instanceof ProviderError ? e : new ProviderError(String(e?.message || e), "UNKNOWN", false);
+          const pe = normalizeProviderError(e, req.signal);
           lastError = pe;
           await recordCall({ provider: provider.id, ok: false, latencyMs, errorCode: pe.code });
           // 传输层失败维度

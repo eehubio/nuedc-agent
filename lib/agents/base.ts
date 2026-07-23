@@ -26,6 +26,7 @@ export type AgentErrorCode =
   | "PROVIDER_UNAVAILABLE"
   | "TEMPORARY_DATABASE_ERROR"
   // —— 不可重试 ——
+  | "CANCELED"             // 用户主动取消，重试无意义
   | "SCHEMA_INVALID"       // 网关内部重试上限后仍不合法结构
   | "INVALID_INPUT"
   | "PERMISSION_DENIED"
@@ -51,6 +52,10 @@ export function classifyAgentError(raw?: string | null): AgentErrorCode {
   const orig = String(raw || "");
   const s = orig.toUpperCase();
   if (!s) return "UNKNOWN";
+  // 取消优先判定：AbortError 的 message 常含 "abort"，若放在后面会被误判为 UNKNOWN
+  if (s.includes("ABORTERROR") || s.includes("ABORTED") || s.includes("ABORT")
+      || s.includes("CANCELED") || s.includes("CANCELLED")
+      || orig.includes("取消")) return "CANCELED";
   if (s.includes("RATE_LIMIT") || s.includes("429") || orig.includes("限流")) return "RATE_LIMIT";
   if (s.includes("TIMEOUT") || orig.includes("超时")) return "TIMEOUT";
   if (s.includes("NETWORK") || s.includes("ECONN") || s.includes("FETCH FAILED") || s.includes("SOCKET") || orig.includes("网络")) return "NETWORK";
@@ -167,7 +172,8 @@ async function runAgentInner(
       result.error_code = code;
       if (result.retryable === undefined) result.retryable = isRetryable(code);
     }
-    await logRun(runId, ctx, type, input, result, Date.now() - t0, "ok");
+    // 按 result 派生状态：result.ok=false 时绝不能记 "ok"
+    await logRun(runId, ctx, type, input, result, Date.now() - t0, runStatusOf(result));
     // Artifact 落库：版本递增 + 方案变更自动级联失效下游
     if (result.ok && result.artifact_type) {
       // 实例级溯源：查本 Agent 消费的上游类型当前最新版本 id
@@ -207,9 +213,27 @@ async function runAgentInner(
     const msg = e?.message || String(e);
     const code = classifyAgentError(msg);
     const result: AgentResult = { ok: false, output: null, message: msg, error_code: code, retryable: isRetryable(code) };
-    await logRun(runId, ctx, type, input, result, Date.now() - t0, "error");
+    await logRun(runId, ctx, type, input, result, Date.now() - t0, runStatusOf(result));
     return { ...result, run_id: runId };
   }
+}
+
+/** agent_runs.status 取值（统计与排障口径）：
+ *   ok               成功
+ *   retryable_error  可重试失败（429/超时/网络/5xx 等），Worker 会重新入队
+ *   error            不可重试失败（schema/输入/权限等）
+ *   canceled         用户取消
+ *   blocked_by_stage 被项目状态机门禁拦截
+ *  以前无论 result.ok 是否为 false 都写 "ok"，导致失败率统计完全失真。 */
+export type AgentRunStatus = "ok" | "retryable_error" | "error" | "canceled" | "blocked_by_stage";
+
+export function runStatusOf(result: AgentResult): AgentRunStatus {
+  if (result.ok) return "ok";
+  const code = result.error_code;
+  if (code === "CANCELED") return "canceled";
+  if (code === "STAGE_BLOCKED") return "blocked_by_stage";
+  const retryable = result.retryable === true || isRetryable(code);
+  return retryable ? "retryable_error" : "error";
 }
 
 async function logRun(
@@ -219,7 +243,7 @@ async function logRun(
   input: any,
   result: AgentResult,
   ms: number,
-  status: string
+  status: AgentRunStatus
 ) {
   try {
     await db().execute({

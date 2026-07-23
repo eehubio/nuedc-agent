@@ -11,6 +11,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# 显式声明权限：仓库若把默认工作流权限设为 restricted，
+# 缺少 checks:write 会导致运行结果不回写到 commit checks（看起来像"CI 没跑"）。
+permissions:
+  contents: read
+  checks: write
+  statuses: write
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest

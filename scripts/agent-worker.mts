@@ -26,6 +26,9 @@ const WORKER_ID = process.env.WORKER_ID || `${hostname()}:${process.pid}`;
 const HEAVY_SLOTS = Number(process.env.WORKER_HEAVY_SLOTS || 2);
 const LIGHT_SLOTS = Number(process.env.WORKER_LIGHT_SLOTS || 6);
 const POLL_MS = Number(process.env.WORKER_POLL_MS || 1500);
+/** 取消轮询间隔：独立于 30 秒的租约心跳。
+ *  取消需要尽快 abort 掉正在进行的 Provider 请求，否则会继续烧 token。 */
+const CANCEL_POLL_MS = Number(process.env.WORKER_CANCEL_POLL_MS || 3000);
 
 let shuttingDown = false;
 let inFlight = 0;
@@ -40,23 +43,25 @@ async function executeOne(task: ClaimedTask): Promise<void> {
   const abort = new AbortController();
   let canceledByPoll = false;
 
-  // 心跳续租 + 取消轮询合并到一个定时器：既保活，又能真正中断 Provider 调用
+  // 租约心跳：30 秒续租一次，仅维持任务归属
   const hb = setInterval(async () => {
     const alive = await heartbeat(task.task_id, WORKER_ID);
-    if (!alive) {
-      log(`⚠ ${task.task_id} 租约已失效（可能已被回收），本次结果将被丢弃`);
-      return;
-    }
-    // 周期检查取消标记：置位则 abort，正在进行的 Provider 请求立即中断
+    if (!alive) log(`⚠ ${task.task_id} 租约已失效（可能已被回收），本次结果将被丢弃`);
+  }, HEARTBEAT_MS);
+
+  // 取消轮询：独立于心跳，默认 3 秒一次。
+  // 与心跳合并会让取消最坏延迟 30 秒才生效，Provider 请求白烧那么久的 token。
+  const cancelPoll = setInterval(async () => {
+    if (abort.signal.aborted) return;
     const c = await db().execute({
       sql: "SELECT cancel_requested FROM agent_tasks WHERE task_id=?", args: [task.task_id],
     }).catch(() => ({ rows: [] as any[] }));
-    if (Number((c.rows[0] as any)?.cancel_requested || 0) === 1 && !abort.signal.aborted) {
+    if (Number((c.rows[0] as any)?.cancel_requested || 0) === 1) {
       canceledByPoll = true;
       abort.abort();
       log(`✋ ${task.task_id} 收到取消请求，正在中断 Provider 调用`);
     }
-  }, HEARTBEAT_MS);
+  }, CANCEL_POLL_MS);
 
   try {
     const input = task.input ? JSON.parse(task.input) : {};
@@ -140,6 +145,7 @@ async function executeOne(task: ClaimedTask): Promise<void> {
     }
   } finally {
     clearInterval(hb);
+    clearInterval(cancelPoll);
     inFlight--;
   }
 }
