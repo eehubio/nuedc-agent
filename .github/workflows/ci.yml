@@ -52,6 +52,7 @@ jobs:
       # 集成测试用进程内 Postgres（pglite），不需要外部数据库服务。
       # 这里给一个占位串，仅用于让 lib/db.ts 的 conn() 不抛「缺少 DATABASE_URL」。
       DATABASE_URL: postgres://mock/mock
+      DB_DRIVER: pglite
       PGLITE_TEST: "1"
       ENABLE_MOCK_PROVIDER: "1"
       NEXT_TELEMETRY_DISABLED: "1"
@@ -92,6 +93,9 @@ jobs:
             --reporter=default --reporter=junit --outputFile=reports/junit-worker-startup.xml \
             2>&1 | tee reports/worker-startup.log
 
+      - name: Build
+        run: npm run build
+
       # 轻量 queue smoke：每次 push/PR 都跑，目标几分钟内完成。
       # 只验证 DB 初始化、服务启动、入队、去重、配额与查询；不调用真实 Provider。
       - name: Queue smoke (light, blocking)
@@ -104,7 +108,8 @@ jobs:
           BASE_URL: http://127.0.0.1:3000
           # 标准 Postgres（非 Neon）—— lib/db.ts 会自动改用 node-postgres 驱动
           DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/nuedc_ci
-          # 明确关闭 pglite：本步骤必须打真实数据库
+          # 显式声明驱动：查询与事务都走 node-postgres
+          DB_DRIVER: postgres_pool
           PGLITE_TEST: "0"
           ENABLE_MOCK_PROVIDER: "1"
           # CI 专用的固定管理员 Key：让压测能读 /api/ready 拿到服务端快照
@@ -117,11 +122,14 @@ jobs:
           npm run db:init
           echo "::endgroup::"
 
-          echo "::group::构建"
-          npx next build > reports/build.log 2>&1
-          echo "::endgroup::"
-
-          # 后台启动服务并记录 PID，便于随后清理
+          # 后台启动服务并记录 PID，便于随后清理。
+          # 必须显式传 DB 相关变量：job 级 env 是 pglite/mock，
+          # 直接继承会让服务端连错库（step 级 env 对后台进程同样生效，
+          # 这里显式重申以免将来有人改动 job env 时静默失效）。
+          DATABASE_URL="$DATABASE_URL" \
+          DB_DRIVER=postgres_pool \
+          PGLITE_TEST=0 \
+          ENABLE_MOCK_PROVIDER=1 \
           ADMIN_API_KEY=ci-smoke-admin-key \
             npx next start -p 3000 > reports/server.log 2>&1 &
           echo $! > reports/server.pid
@@ -165,9 +173,6 @@ jobs:
             echo "已停止 next start (pid=$pid)"
           fi
           pkill -f "next start -p 3000" 2>/dev/null || true
-
-      - name: Build
-        run: npm run build
 
       - name: Upload test reports
         if: always()

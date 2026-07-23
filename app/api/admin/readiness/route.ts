@@ -41,7 +41,9 @@ export async function GET(req: NextRequest) {
     }, { status: 503 });
   }
 
-  const { db } = await import("@/lib/db");
+  const { db, resolveDbDriver } = await import("@/lib/db");
+  let dbDriver: string | null = null;
+  try { dbDriver = resolveDbDriver(); } catch { dbDriver = "invalid"; }
 
   // —— Worker 心跳 ——
   const wk = await db().execute({
@@ -148,7 +150,8 @@ export async function GET(req: NextRequest) {
     ready: errors.length === 0,
     errors,
     warnings,
-    database: { ok: true },
+    database: { ok: true, driver: dbDriver },
+    db_driver: dbDriver,
     tx_pool: pool,
     workers: {
       total: workers.length, live: liveWorkers.length,
