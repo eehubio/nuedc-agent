@@ -105,8 +105,10 @@ async function runUser(i: number): Promise<void> {
     if (proj.status >= 400 || proj.status === 0) { s.httpStatus = proj.status; samples.push(s); return; }
     const projectId = proj.body?.project_id;
 
-    // queue-only 用轻量 agent，避免触发重型链路
-    const agent = MODE === "queue-only" ? "requirement_analyst" : "solution_architect";
+    // queue-only 用真实注册的轻量 agent（topic_forecast → GENERAL_QA，light/low 档），
+    // 避免占用重型槽位。注意必须是 lib/agents 里真实注册过的名字，
+    // 否则服务端 agent 白名单校验会直接返回 400。
+    const agent = MODE === "queue-only" ? "topic_forecast" : "solution_architect";
 
     // solution_architect 有「需求已确认」门禁和阶段门禁：
     // 必须先写入 CONFIRMED 需求并把项目推进到 REQUIREMENTS_PARSED，否则任务必被拒。
