@@ -19,15 +19,27 @@ export interface MockDbContext {
   pg: PGlite;
   reset: () => Promise<void>;
   raw: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }>;
+  /** 故障注入：让匹配的第 n 次查询抛错，用于验证事务回滚。传 null 清除。 */
+  failOn: (opts: { match: RegExp; nth?: number; message?: string } | null) => void;
 }
 
 let active: PGlite | null = null;
+let fault: { match: RegExp; nth: number; message: string; seen: number } | null = null;
 
 /** neon() 的替身：真实 neon 返回的对象既可作 tagged-template 调用，也带 .query(sql, params)。
  *  lib/db.ts 用的是 conn().query(sql, params)，所以这里挂一个 query 方法转发到 pglite。 */
 function neonShim(): any {
   const query = async (sql: string, params: unknown[] = []) => {
     if (!active) throw new Error("mock db not initialized");
+    // 故障注入：匹配到指定次数时抛错，模拟中途失败
+    if (fault && fault.match.test(sql)) {
+      fault.seen++;
+      if (fault.seen === fault.nth) {
+        const err: any = new Error(fault.message);
+        err.code = "INJECTED";
+        throw err;
+      }
+    }
     const res = await active.query(sql, params as any[]);
     return res.rows;
   };
@@ -58,7 +70,11 @@ export async function setupMockDb(): Promise<MockDbContext> {
       const res = await active!.query(sql, params as any[]);
       return { rows: res.rows as any[] };
     },
+    failOn: (opts) => {
+      fault = opts ? { match: opts.match, nth: opts.nth ?? 1, message: opts.message ?? "注入的故障", seen: 0 } : null;
+    },
     reset: async () => {
+      fault = null;   // 每个用例开始前清除故障注入
       // 只清空「已存在」的业务表，避免因引用尚未建的表（迁移未到）导致整条 TRUNCATE 失败
       const want = [
         "agent_tasks", "artifacts", "artifact_dependencies", "llm_usage", "llm_usage_events",

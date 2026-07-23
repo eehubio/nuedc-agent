@@ -85,18 +85,57 @@ export async function POST(req: NextRequest) {
   // 模型名不在建单时臆测（选路由网关在执行时决定，可能容灾切换）——执行完成后回写实际值
   const model: string | null = null;
 
-  // 原子幂等去重：依赖迁移 16 的部分唯一索引 idx_tasks_active_dedup
-  //   UNIQUE(dedup_key) WHERE status IN ('queued','running')
-  // 并发下同一 (owner,project,agent,tier,input) 只会有一条插入成功，其余 ON CONFLICT DO NOTHING。
-  const ins = await db().execute({
-    sql: `INSERT INTO agent_tasks (task_id, project_id, agent_type, status, input, tier, idempotency_key, model,
-            task_type, priority, input_hash, dedup_key, owner_ref, queue_name, cost_class, quota_ref, quota_kind, scheduled_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, now())
-          ON CONFLICT (dedup_key) WHERE status IN ('queued','running') AND dedup_key IS NOT NULL DO NOTHING
-          RETURNING task_id`,
-    args: [taskId, projectId, agent, "queued", JSON.stringify(body.input || {}), tier, body.idempotency_key || null, model,
-      taskType, policy.priority, hash, dedupKey, id.owner, policy.concurrencyClass, policy.costClass, quotaRef, quotaKind],
-  });
+  // 原子幂等去重：依赖迁移 16 的两个唯一约束
+  //   1) 部分唯一索引 idx_tasks_active_dedup: UNIQUE(dedup_key) WHERE status IN ('queued','running')
+  //   2) idx_tasks_idem_owner: UNIQUE(owner_ref, idempotency_key)
+  // ON CONFLICT 只能声明一个冲突目标，因此 dedup_key 走 ON CONFLICT DO NOTHING，
+  // idempotency_key 的唯一冲突由 catch 捕获 —— 两条并发请求都通过了上面的 SELECT 时，
+  // 其中一条必然在这里撞唯一约束，必须退还它预占的配额并返回既有任务，而不是抛 500。
+  let ins: { rows: Record<string, unknown>[] };
+  let idemConflict = false;
+  try {
+    ins = await db().execute({
+      sql: `INSERT INTO agent_tasks (task_id, project_id, agent_type, status, input, tier, idempotency_key, model,
+              task_type, priority, input_hash, dedup_key, owner_ref, queue_name, cost_class, quota_ref, quota_kind, scheduled_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, now())
+            ON CONFLICT (dedup_key) WHERE status IN ('queued','running') AND dedup_key IS NOT NULL DO NOTHING
+            RETURNING task_id`,
+      args: [taskId, projectId, agent, "queued", JSON.stringify(body.input || {}), tier, body.idempotency_key || null, model,
+        taskType, policy.priority, hash, dedupKey, id.owner, policy.concurrencyClass, policy.costClass, quotaRef, quotaKind],
+    });
+  } catch (e: any) {
+    // 23505 = unique_violation。判定是否为 idempotency_key 冲突（约束名或列名匹配）
+    const msg = String(e?.message || e);
+    const code = String(e?.code || "");
+    if (code === "23505" || /duplicate key|unique constraint|already exists/i.test(msg)) {
+      idemConflict = true;
+      ins = { rows: [] };
+    } else {
+      // 非唯一冲突的意外错误：退还预占，避免配额泄漏
+      if (quotaRef && quotaKind) {
+        const { refundQuota } = await import("@/lib/usage");
+        await refundQuota(id.owner, quotaKind, quotaRef).catch(() => {});
+      }
+      throw e;
+    }
+  }
+
+  if (idemConflict) {
+    // 并发幂等冲突：退还本次预占，返回先到那一条已存在的任务（同一个 task_id）
+    if (quotaRef && quotaKind) {
+      const { refundQuota } = await import("@/lib/usage");
+      await refundQuota(id.owner, quotaKind, quotaRef).catch(() => {});
+    }
+    const exist = await db().execute({
+      sql: "SELECT task_id, status FROM agent_tasks WHERE owner_ref=? AND idempotency_key=?",
+      args: [id.owner, body.idempotency_key || null],
+    });
+    if (exist.rows.length) {
+      return NextResponse.json({ task_id: exist.rows[0].task_id, status: exist.rows[0].status, deduped: true, reason: "idempotency_key" }, { status: 200 });
+    }
+    // 极端竞态：冲突行在两句之间消失，让客户端重试（不返回 500）
+    return NextResponse.json({ error: "任务提交冲突，请重试" }, { status: 409 });
+  }
 
   if (!ins.rows.length) {
     // 去重命中：已有活动任务在跑。退还刚预占的配额，返回既有任务。

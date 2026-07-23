@@ -9,6 +9,14 @@ import { ensureMigrations } from "./migrations";
 
 type Stmt = string | { sql: string; args?: unknown[] };
 
+/** 可执行 SQL 的对象：既可以是全局 db()，也可以是事务内的 tx。
+ *  需要「既能独立调用、又能参与外部事务」的函数应接受一个 Executor 参数，
+ *  默认取 db()，在事务中由调用方传入 tx —— 否则函数内部的读取会走另一条连接，
+ *  看不到事务内的未提交改动，也不受 FOR UPDATE 锁保护（脏读 / 快照不一致）。 */
+export interface Executor {
+  execute(stmt: Stmt): Promise<{ rows: Record<string, unknown>[] }>;
+}
+
 let _sql: any = null;
 
 function conn() {

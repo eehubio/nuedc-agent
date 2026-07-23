@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { db, ensureSchema, uid } from "./db";
-import { withTransaction } from "./db";
+import { db, ensureSchema, uid, withTransaction, type Executor } from "./db";
 
 /** 赛题中心（规范化模型）。
  *  official_problems 只存题目主体；每次发布产生不可变的 problem_versions，
@@ -95,19 +94,21 @@ export async function getPublishedVersion(problemId: string) {
   return rs.rows[0] || null;
 }
 
-/** 读取某版本的完整内容 */
-export async function getVersionContent(versionId: string) {
+/** 读取某版本的完整内容。
+ *  executor 默认走全局 db()；在事务中必须由调用方传入 tx，
+ *  否则读取会走另一条连接，看不到事务内的改动、也不在 FOR UPDATE 的一致快照里。 */
+export async function getVersionContent(versionId: string, executor?: Executor) {
   await ensureSchema();
-  const [ver, reqs, items, notes, reviews] = await Promise.all([
-    db().execute({
-      sql: `SELECT v.*, p.year, p.code, p.title, p.group_name FROM problem_versions v
-            JOIN official_problems p ON p.problem_id=v.problem_id WHERE v.version_id=?`, args: [versionId] }),
-    db().execute({ sql: "SELECT * FROM problem_requirements WHERE version_id=? ORDER BY sort_order, requirement_no", args: [versionId] }),
-    db().execute({ sql: "SELECT * FROM problem_scoring_items WHERE version_id=? ORDER BY sort_order", args: [versionId] }),
-    db().execute({ sql: "SELECT * FROM problem_notes WHERE version_id=? ORDER BY created_at", args: [versionId] }),
-    db().execute({ sql: "SELECT * FROM problem_reviews WHERE version_id=? ORDER BY created_at", args: [versionId] }),
-  ]);
+  const ex = executor ?? db();
+  // 事务内是单条连接，不能并发多路复用，因此顺序执行（非事务下这点开销可忽略）
+  const ver = await ex.execute({
+    sql: `SELECT v.*, p.year, p.code, p.title, p.group_name FROM problem_versions v
+          JOIN official_problems p ON p.problem_id=v.problem_id WHERE v.version_id=?`, args: [versionId] });
   if (!ver.rows.length) return null;
+  const reqs = await ex.execute({ sql: "SELECT * FROM problem_requirements WHERE version_id=? ORDER BY sort_order, requirement_no", args: [versionId] });
+  const items = await ex.execute({ sql: "SELECT * FROM problem_scoring_items WHERE version_id=? ORDER BY sort_order", args: [versionId] });
+  const notes = await ex.execute({ sql: "SELECT * FROM problem_notes WHERE version_id=? ORDER BY created_at", args: [versionId] });
+  const reviews = await ex.execute({ sql: "SELECT * FROM problem_reviews WHERE version_id=? ORDER BY created_at", args: [versionId] });
   return {
     version: ver.rows[0] as any,
     requirements: (reqs.rows as any[]).map((r) => ({ ...r, id: r.requirement_no })),
@@ -120,63 +121,71 @@ export async function getVersionContent(versionId: string) {
   };
 }
 
-/** 写入提取结果（仅草稿版本可写） */
+/** 写入提取结果（仅草稿版本可写）。
+ *  全程单一事务：任一条插入失败则整批回滚，绝不会留下「半套提取结果」
+ *  （旧实现是多条独立 SQL：先 DELETE 再逐条 INSERT，中途失败会把原数据删光）。 */
 export async function saveExtraction(versionId: string, data: {
   requirements?: any[]; scoringItems?: any[]; ambiguities?: any[]; rawText?: string;
 }) {
   await ensureSchema();
-  const v = await db().execute({ sql: "SELECT immutable, status FROM problem_versions WHERE version_id=?", args: [versionId] });
-  if (!v.rows.length) throw new Error("版本不存在");
-  if (Number((v.rows[0] as any).immutable) === 1 || String((v.rows[0] as any).status) === "published") {
-    throw new Error("已发布版本不可修改，请创建新版本后再编辑");
-  }
+  await withTransaction(async (tx) => {
+    // 锁定版本行，阻止并发写入与「检查后被发布」的竞态
+    const v = await tx.execute({
+      sql: "SELECT immutable, status FROM problem_versions WHERE version_id=? FOR UPDATE",
+      args: [versionId],
+    });
+    if (!v.rows.length) throw new Error("版本不存在");
+    if (Number((v.rows[0] as any).immutable) === 1 || String((v.rows[0] as any).status) === "published") {
+      throw new Error("已发布版本不可修改，请创建新版本后再编辑");
+    }
 
-  if (data.rawText !== undefined) {
-    await db().execute({ sql: "UPDATE problem_versions SET raw_text=? WHERE version_id=?", args: [data.rawText, versionId] });
-  }
-  if (data.requirements) {
-    await db().execute({ sql: "DELETE FROM problem_requirements WHERE version_id=?", args: [versionId] });
-    let i = 0;
-    for (const r of data.requirements) {
-      i++;
-      await db().execute({
-        sql: `INSERT INTO problem_requirements (req_id, version_id, requirement_no, type, description, target, unit,
-                tolerance, priority, verification_method, source_page, source_quote, status, sort_order)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        args: [uid("PRQ"), versionId, r.id || r.requirement_no || `REQ-${String(i).padStart(3, "0")}`,
-          r.type || null, r.description || "", r.target != null ? String(r.target) : null, r.unit || null,
-          r.tolerance || null, r.priority || "mandatory", r.verification_method || null,
-          r.source_page != null ? Number(r.source_page) : null, r.source_quote || r.source || null,
-          r.status || "AI_EXTRACTED", i],
-      });
+    if (data.rawText !== undefined) {
+      await tx.execute({ sql: "UPDATE problem_versions SET raw_text=? WHERE version_id=?", args: [data.rawText, versionId] });
     }
-  }
-  if (data.scoringItems) {
-    await db().execute({ sql: "DELETE FROM problem_scoring_items WHERE version_id=?", args: [versionId] });
-    let i = 0;
-    for (const s of data.scoringItems) {
-      i++;
-      await db().execute({
-        sql: `INSERT INTO problem_scoring_items (item_id, version_id, item, points, points_type,
-                requirement_refs, source_page, source_quote, sort_order)
-              VALUES (?,?,?,?,?,?,?,?,?)`,
-        args: [uid("PSI"), versionId, s.item || "", s.points != null ? Number(s.points) : null,
-          s.points_type || "estimated", JSON.stringify(s.requirement_ids || []),
-          s.source_page != null ? Number(s.source_page) : null, s.source_quote || null, i],
-      });
+    if (data.requirements) {
+      await tx.execute({ sql: "DELETE FROM problem_requirements WHERE version_id=?", args: [versionId] });
+      let i = 0;
+      for (const r of data.requirements) {
+        i++;
+        await tx.execute({
+          sql: `INSERT INTO problem_requirements (req_id, version_id, requirement_no, type, description, target, unit,
+                  tolerance, priority, verification_method, source_page, source_quote, status, sort_order)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          args: [uid("PRQ"), versionId, r.id || r.requirement_no || `REQ-${String(i).padStart(3, "0")}`,
+            r.type || null, r.description || "", r.target != null ? String(r.target) : null, r.unit || null,
+            r.tolerance || null, r.priority || "mandatory", r.verification_method || null,
+            r.source_page != null ? Number(r.source_page) : null, r.source_quote || r.source || null,
+            r.status || "AI_EXTRACTED", i],
+        });
+      }
     }
-  }
-  if (data.ambiguities) {
-    await db().execute({ sql: "DELETE FROM problem_notes WHERE version_id=? AND kind='ambiguity'", args: [versionId] });
-    for (const a of data.ambiguities) {
-      const text = typeof a === "string" ? a : (a?.description || JSON.stringify(a));
-      await db().execute({
-        sql: "INSERT INTO problem_notes (note_id, version_id, kind, content) VALUES (?,?,'ambiguity',?)",
-        args: [uid("PN"), versionId, String(text).slice(0, 1000)],
-      });
+    if (data.scoringItems) {
+      await tx.execute({ sql: "DELETE FROM problem_scoring_items WHERE version_id=?", args: [versionId] });
+      let i = 0;
+      for (const s of data.scoringItems) {
+        i++;
+        await tx.execute({
+          sql: `INSERT INTO problem_scoring_items (item_id, version_id, item, points, points_type,
+                  requirement_refs, source_page, source_quote, sort_order)
+                VALUES (?,?,?,?,?,?,?,?,?)`,
+          args: [uid("PSI"), versionId, s.item || "", s.points != null ? Number(s.points) : null,
+            s.points_type || "estimated", JSON.stringify(s.requirement_ids || []),
+            s.source_page != null ? Number(s.source_page) : null, s.source_quote || null, i],
+        });
+      }
     }
-  }
-  await db().execute({ sql: "UPDATE problem_versions SET status='extracted' WHERE version_id=? AND status='draft'", args: [versionId] });
+    if (data.ambiguities) {
+      await tx.execute({ sql: "DELETE FROM problem_notes WHERE version_id=? AND kind='ambiguity'", args: [versionId] });
+      for (const a of data.ambiguities) {
+        const text = typeof a === "string" ? a : (a?.description || JSON.stringify(a));
+        await tx.execute({
+          sql: "INSERT INTO problem_notes (note_id, version_id, kind, content) VALUES (?,?,'ambiguity',?)",
+          args: [uid("PN"), versionId, String(text).slice(0, 1000)],
+        });
+      }
+    }
+    await tx.execute({ sql: "UPDATE problem_versions SET status='extracted' WHERE version_id=? AND status='draft'", args: [versionId] });
+  });
 }
 
 /* ============ 双模复核差异匹配 ============ */
@@ -350,25 +359,29 @@ export async function saveDiffs(versionId: string, problemId: string, diffs: Dif
 
 /* ============ 发布清单与不可变版本 ============ */
 
-export interface ChecklistItem { key: string; label: string; passed: boolean; detail: string }
+/** 清单项。severity=error 阻断发布；severity=warning 仅提示，不阻断。 */
+export interface ChecklistItem { key: string; label: string; passed: boolean; detail: string; severity: "error" | "warning" }
 
-/** 发布前检查。全部通过（或 admin 显式 override）才允许发布。 */
-export async function publicationChecklist(versionId: string): Promise<{ items: ChecklistItem[]; passed: boolean }> {
+/** 发布前检查。所有 severity=error 的项通过（或 admin 显式 override）才允许发布。
+ *  executor 默认走全局 db()；在事务中必须传入 tx，保证与发布写入同一快照。 */
+export async function publicationChecklist(versionId: string, executor?: Executor): Promise<{ items: ChecklistItem[]; passed: boolean }> {
   await ensureSchema();
-  const content = await getVersionContent(versionId);
+  const ex = executor ?? db();
+  const content = await getVersionContent(versionId, ex);
   const items: ChecklistItem[] = [];
-  if (!content) return { items: [{ key: "exists", label: "版本存在", passed: false, detail: "版本不存在" }], passed: false };
+  if (!content) return { items: [{ key: "exists", label: "版本存在", passed: false, detail: "版本不存在", severity: "error" }], passed: false };
 
   const reqs = content.requirements;
   const scoring = content.scoring_items;
 
-  items.push({ key: "has_requirements", label: "已提取需求", passed: reqs.length > 0, detail: `${reqs.length} 条` });
+  items.push({ key: "has_requirements", label: "已提取需求", passed: reqs.length > 0, detail: `${reqs.length} 条`, severity: "error" });
 
   const pending = reqs.filter((r) => !["CONFIRMED", "REJECTED"].includes(String(r.status)));
   items.push({
     key: "all_confirmed", label: "需求全部确认或驳回",
     passed: pending.length === 0,
     detail: pending.length ? `${pending.length} 条待确认：${pending.slice(0, 3).map((r) => r.requirement_no).join("、")}` : "全部已处理",
+    severity: "error",
   });
 
   // 正式需求必须「同时」有 source_page 与 source_quote。
@@ -387,24 +400,29 @@ export async function publicationChecklist(versionId: string): Promise<{ items: 
     key: "has_source", label: "每条正式需求同时具备页码与原文引用（人工补充需审核人+理由）",
     passed: badSource.length === 0,
     detail: badSource.length ? `${badSource.length} 条溯源不完整：${badSource.slice(0, 3).map((r) => r.requirement_no).join("、")}` : "全部满足",
+    severity: "error",
   });
 
-  const diffs = await db().execute({
+  const diffs = await ex.execute({
     sql: "SELECT COUNT(*) n FROM problem_review_diffs WHERE version_id=? AND resolved=0 AND severity='critical'",
     args: [versionId],
   }).catch(() => ({ rows: [{ n: 0 }] as any[] }));
   const crit = Number((diffs.rows[0] as any)?.n || 0);
-  items.push({ key: "no_critical_diff", label: "无未确认的关键差异", passed: crit === 0, detail: crit ? `${crit} 处指标/分值差异待确认` : "无" });
+  items.push({ key: "no_critical_diff", label: "无未确认的关键差异", passed: crit === 0, detail: crit ? `${crit} 处指标/分值差异待确认` : "无", severity: "error" });
 
   const amb = content.notes.filter((n) => String(n.kind) === "ambiguity" && Number(n.resolved) === 0);
-  items.push({ key: "ambiguity_resolved", label: "题面歧义已处理", passed: amb.length === 0, detail: amb.length ? `${amb.length} 条未处理` : "无" });
+  items.push({ key: "ambiguity_resolved", label: "题面歧义已处理", passed: amb.length === 0, detail: amb.length ? `${amb.length} 条未处理` : "无", severity: "error" });
 
   const official = scoring.filter((s) => String(s.points_type) === "official" && s.points != null);
   const total = official.reduce((a, s) => a + Number(s.points), 0);
   const sane = official.length === 0 || (total > 0 && total <= 200);
+  // 预期总分未配置时，总分范围只是启发式判断（不同赛题总分口径不同），仅告警不阻断
+  const ver: any = content.version;
+  const expectedTotal = ver.expected_total_score != null ? Number(ver.expected_total_score) : null;
   items.push({
     key: "scoring_total", label: "官方评分总分合理",
     passed: sane, detail: official.length ? `官方分值 ${official.length} 项，合计 ${total}` : "题面未给官方分值（按估算口径）",
+    severity: expectedTotal != null ? "error" : "warning",
   });
 
   const unbound = official.filter((s) => !(s.requirement_ids || []).length);
@@ -412,17 +430,16 @@ export async function publicationChecklist(versionId: string): Promise<{ items: 
     key: "scoring_bound", label: "官方评分项已绑定需求",
     passed: unbound.length === 0,
     detail: unbound.length ? `${unbound.length} 项未绑定` : official.length ? "全部已绑定" : "无官方分值项",
+    severity: "error",
   });
 
   const reviewers = new Set(content.reviews.filter((r) => String(r.decision) === "approve").map((r) => String(r.reviewer)));
   items.push({
     key: "two_reviewers", label: "至少两名工作人员审核通过",
-    passed: reviewers.size >= 2, detail: `${reviewers.size} 人已通过`,
+    passed: reviewers.size >= 2, detail: `${reviewers.size} 人已通过`, severity: "error",
   });
 
-  // 预期评分结构核对：若填写了 expected_total_score，则官方分值合计须与之相符
-  const ver: any = content.version;
-  const expectedTotal = ver.expected_total_score != null ? Number(ver.expected_total_score) : null;
+  // 预期评分结构核对：配置了 expected_total_score 时，精确不一致为阻断性错误
   if (expectedTotal != null) {
     const officialTotal = official.reduce((a, s) => a + Number(s.points || 0), 0);
     const parts = [
@@ -437,10 +454,12 @@ export async function publicationChecklist(versionId: string): Promise<{ items: 
       detail: totalOk && partsOk
         ? `预期 ${expectedTotal} 分，官方分值合计 ${officialTotal} 分`
         : `预期 ${expectedTotal}，官方合计 ${officialTotal}${parts.length ? `，分项合计 ${partsSum}` : ""}（不一致）`,
+      severity: "error",
     });
   }
 
-  return { items, passed: items.every((i) => i.passed) };
+  // 只有 error 级未通过才阻断发布；warning 级仅提示
+  return { items, passed: items.every((i) => i.passed || i.severity === "warning") };
 }
 
 export async function addReview(versionId: string, reviewer: string, decision: "approve" | "reject", note?: string) {
@@ -477,15 +496,16 @@ export async function publishVersion(versionId: string, publishedBy: string, ove
         return { ok: false, error: "该版本已发布，无需重复发布" };
       }
 
-      // 2) 事务内重新执行发布清单（读取的是锁内一致快照）
-      const { items, passed } = await publicationChecklist(versionId);
+      // 2) 事务内重新执行发布清单 —— 必须传入 tx，否则读取会走另一条连接，
+      //    看不到锁内快照，检查与写入之间仍存在 TOCTOU
+      const { items, passed } = await publicationChecklist(versionId, tx);
       if (!passed && !override) {
-        const failed = items.filter((i) => !i.passed).map((i) => i.label).join("、");
-        // 抛出以触发回滚（虽然此前只有读，回滚无副作用，但保持路径统一）
+        // 只有 error 级阻断；warning 级不计入失败原因
+        const failed = items.filter((i) => !i.passed && i.severity === "error").map((i) => i.label).join("、");
         return { ok: false, error: `发布清单未通过：${failed}`, checklist: items };
       }
 
-      const content = await getVersionContent(versionId);
+      const content = await getVersionContent(versionId, tx);
       if (!content) return { ok: false, error: "版本不存在" };
 
       // 4) 生成不可变内容哈希
