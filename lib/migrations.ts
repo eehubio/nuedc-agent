@@ -460,6 +460,25 @@ ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS metadata TEXT;
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS human_review_required INTEGER DEFAULT 0;
 `,
   },
+  {
+    id: 18,
+    name: "provider_task_health",
+    sql: `
+CREATE TABLE IF NOT EXISTS provider_task_health (
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  task_type TEXT NOT NULL,
+  window_start TIMESTAMPTZ NOT NULL,
+  transport_ok INTEGER DEFAULT 0, transport_total INTEGER DEFAULT 0,
+  parse_ok INTEGER DEFAULT 0,     parse_total INTEGER DEFAULT 0,
+  schema_ok INTEGER DEFAULT 0,    schema_total INTEGER DEFAULT 0,
+  timeout_n INTEGER DEFAULT 0,    rate429_n INTEGER DEFAULT 0,
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (provider, model, task_type, window_start)
+);
+CREATE INDEX IF NOT EXISTS idx_ptask_health ON provider_task_health(provider, model, task_type, window_start DESC);
+`,
+  },
 ];
 
 let applied = false;

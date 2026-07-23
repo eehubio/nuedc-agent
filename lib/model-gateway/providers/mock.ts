@@ -13,7 +13,15 @@ export const mockProvider: Provider = {
 
   async complete(req: ProviderRequest): Promise<ProviderResponse> {
     const latency = Number(process.env.MOCK_LATENCY_MS || 200);
-    await new Promise((r) => setTimeout(r, latency));
+    // 模拟延迟期间响应取消信号，让取消测试可验证真实中断
+    await new Promise<void>((resolve, reject) => {
+      if (req.signal?.aborted) return reject(new ProviderError("请求已取消", "CANCELED", false));
+      const timer = setTimeout(resolve, latency);
+      req.signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(new ProviderError("请求已取消", "CANCELED", false));
+      }, { once: true });
+    });
 
     const failRate = Number(process.env.MOCK_FAIL_RATE || 0);
     if (failRate > 0 && Math.random() < failRate) {

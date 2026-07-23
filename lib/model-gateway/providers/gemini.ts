@@ -48,6 +48,7 @@ export const geminiProvider: Provider = {
         }),
       },
       req.timeoutMs,
+      req.signal,
     );
     if (!res.ok) throw classifyHttpError(res.status, await res.text());
 

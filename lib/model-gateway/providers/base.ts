@@ -13,6 +13,8 @@ export interface ProviderRequest {
   pdfBase64?: string;         // 多模态：PDF 输入
   imageBase64?: string;
   imageMime?: string;
+  /** 外部取消信号。触发后正在进行的 HTTP 请求会被 abort，Provider 抛出 CANCELED。 */
+  signal?: AbortSignal;
 }
 
 export interface ProviderResponse {
@@ -27,7 +29,7 @@ export interface ProviderResponse {
 export class ProviderError extends Error {
   constructor(
     message: string,
-    readonly code: "RATE_LIMIT" | "TIMEOUT" | "AUTH" | "MODEL_NOT_FOUND" | "REGION_BLOCKED" | "SAFETY" | "SERVER" | "UNKNOWN",
+    readonly code: "RATE_LIMIT" | "TIMEOUT" | "AUTH" | "MODEL_NOT_FOUND" | "REGION_BLOCKED" | "SAFETY" | "SERVER" | "CANCELED" | "UNKNOWN",
     readonly retryable: boolean,
     readonly retryAfterMs?: number,
   ) { super(message); this.name = "ProviderError"; }
@@ -71,14 +73,26 @@ export function classifyHttpError(status: number, body: string): ProviderError {
   return new ProviderError(`HTTP ${status}：${snippet}`, "UNKNOWN", false);
 }
 
-/** 带超时的 fetch */
-export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+/** 带超时的 fetch，同时支持外部取消信号。
+ *  超时 → TIMEOUT（可重试）；外部取消 → CANCELED（不重试）。 */
+export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, signal?: AbortSignal): Promise<Response> {
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  const timer = setTimeout(() => ctl.abort(new DOMException("timeout", "TimeoutError")), timeoutMs);
+  // 外部取消信号联动：任一触发都 abort 本次请求
+  const onExternalAbort = () => ctl.abort(new DOMException("canceled", "AbortError"));
+  if (signal) {
+    if (signal.aborted) { clearTimeout(timer); throw new ProviderError("请求已取消", "CANCELED", false); }
+    signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
   try {
     return await fetch(url, { ...init, signal: ctl.signal });
   } catch (e: any) {
-    if (e?.name === "AbortError") throw new ProviderError(`请求超时（${timeoutMs}ms）`, "TIMEOUT", true);
+    // 外部取消优先判定
+    if (signal?.aborted) throw new ProviderError("请求已取消", "CANCELED", false);
+    if (e?.name === "AbortError" || e?.name === "TimeoutError") throw new ProviderError(`请求超时（${timeoutMs}ms）`, "TIMEOUT", true);
     throw new ProviderError(`网络错误：${e?.message || e}`, "SERVER", true);
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener("abort", onExternalAbort);
+  }
 }

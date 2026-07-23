@@ -118,6 +118,7 @@ export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
 
   // 自动附加当前 Agent 上下文（ALS，天然并发安全）
   let auto: Partial<LlmOptions> = {};
+  let signal: AbortSignal | undefined;
   try {
     const { currentAgentContext } = await import("./agents/base");
     const c = currentAgentContext();
@@ -127,6 +128,7 @@ export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
       taskId: opts.taskId ?? c.taskId,
       taskType: opts.taskType ?? (c.agent ? AGENT_TASK_TYPE[c.agent] : undefined),
     };
+    signal = c.signal;
   } catch { /* 非 Agent 环境（如自检）忽略 */ }
 
   const r = await modelGateway.run<T>({
@@ -141,6 +143,7 @@ export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
     projectId: auto.projectId ?? null,
     taskId: auto.taskId ?? null,
     allowCache: opts.allowCache,
+    signal,
   });
 
   if (!r.ok) throw new GatewayCallError(r.message || "模型调用失败", r.errorCode, r.validation?.issues);

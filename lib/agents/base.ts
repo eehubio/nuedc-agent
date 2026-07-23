@@ -9,6 +9,8 @@ export interface AgentContext {
   projectId: string | null;
   stage: ProjectStage;
   tier: string;
+  /** 外部取消信号：透传到网关，取消时中断正在进行的 Provider 调用 */
+  signal?: AbortSignal;
 }
 
 /** 结构化错误码。Worker 据此决定 completeTask(error) 还是 failTask(retry)。
@@ -96,6 +98,8 @@ export interface AgentRunContext {
   /** 本次运行中网关是否返回过 partial 结果（截断后修复）。
    *  放在 ALS 上下文里而非模块级变量，避免并发串线。 */
   partialSeen?: { value: boolean };
+  /** 外部取消信号，llmJson 读取后透传给网关 */
+  signal?: AbortSignal;
 }
 
 const agentContextStore = new AsyncLocalStorage<AgentRunContext>();
@@ -119,7 +123,7 @@ export function runAgent(
 ): Promise<AgentResult & { run_id: string }> {
   return withAgentContext(
     { owner: ctx.owner ?? null, projectId: ctx.projectId, taskId: ctx.taskId ?? null, agent: type,
-      partialSeen: { value: false } },
+      partialSeen: { value: false }, signal: ctx.signal },
     () => runAgentInner(type, input, ctx),
   );
 }

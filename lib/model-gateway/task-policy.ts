@@ -41,51 +41,61 @@ export interface TaskPolicy {
 
 const P = (
   taskType: TaskType, preference: TaskPolicy["preference"], maxOutputTokens: number,
-  priority: Priority, over: Partial<TaskPolicy> = {},
+  priority: Priority,
+  /** 任务重量与成本必须显式声明，不由 maxOutputTokens 隐式推断 ——
+   *  否则纯粹为降本调 maxOutputTokens 会意外改变队列归属与配额类别。 */
+  weight: { concurrencyClass: Concurrency; costClass: CostClass },
+  over: Partial<TaskPolicy> = {},
 ): TaskPolicy => ({
   taskType, preference, maxOutputTokens, priority,
   schemaMode: "warn",
   useRulesFirst: false, allowCache: true, cacheScope: "project",
   maxInputTokens: 8000, temperature: 0.3, thinkingBudget: 0,
   timeoutMs: 90_000, maxRetries: 2,
-  costClass: maxOutputTokens > 3000 ? "high" : maxOutputTokens > 1500 ? "medium" : "low",
-  concurrencyClass: maxOutputTokens > 3000 ? "heavy" : "light",
+  costClass: weight.costClass,
+  concurrencyClass: weight.concurrencyClass,
   requiresHumanReview: false,
   ...over,
 });
 
+// 重量与成本档位速记（显式声明，见整改要求第五条）
+const HEAVY_HIGH = { concurrencyClass: "heavy" as Concurrency, costClass: "high" as CostClass };
+const HEAVY_MED = { concurrencyClass: "heavy" as Concurrency, costClass: "medium" as CostClass };
+const LIGHT_MED = { concurrencyClass: "light" as Concurrency, costClass: "medium" as CostClass };
+const LIGHT_LOW = { concurrencyClass: "light" as Concurrency, costClass: "low" as CostClass };
+
 export const TASK_POLICIES: Record<TaskType, TaskPolicy> = {
   // ---- 赛题中心（官方题目只解析一次，结果全局缓存）----
-  PDF_EXTRACT:           P("PDF_EXTRACT", "vision", 8000, 1, { cacheScope: "global", timeoutMs: 120_000, maxInputTokens: 20_000 }),
-  PROBLEM_STRUCTURE:     P("PROBLEM_STRUCTURE", "quality", 4000, 1, { schemaMode: "strict", cacheScope: "global", requiresHumanReview: true }),
-  SCORING_EXTRACT:       P("SCORING_EXTRACT", "quality", 2000, 1, { schemaMode: "strict", cacheScope: "global", requiresHumanReview: true }),
+  PDF_EXTRACT:           P("PDF_EXTRACT", "vision", 8000, 1, HEAVY_HIGH, { cacheScope: "global", timeoutMs: 120_000, maxInputTokens: 20_000 }),
+  PROBLEM_STRUCTURE:     P("PROBLEM_STRUCTURE", "quality", 4000, 1, HEAVY_HIGH, { schemaMode: "strict", cacheScope: "global", requiresHumanReview: true }),
+  SCORING_EXTRACT:       P("SCORING_EXTRACT", "quality", 2000, 1, HEAVY_HIGH, { schemaMode: "strict", cacheScope: "global", requiresHumanReview: true }),
 
   // ---- 需求与方案 ----
-  REQUIREMENT_NORMALIZE: P("REQUIREMENT_NORMALIZE", "cheap", 2000, 0, { schemaMode: "strict" }),
-  SOLUTION_PRIMARY:      P("SOLUTION_PRIMARY", "quality", 4000, 0, { schemaMode: "strict", thinkingBudget: 1024, temperature: 0.4, timeoutMs: 120_000, requiresHumanReview: true }),
-  SOLUTION_FALLBACK:     P("SOLUTION_FALLBACK", "cheap", 3000, 2, { schemaMode: "strict", temperature: 0.6, requiresHumanReview: true }),
-  MODULE_GAP_ANALYSIS:   P("MODULE_GAP_ANALYSIS", "cheap", 1500, 1),
+  REQUIREMENT_NORMALIZE: P("REQUIREMENT_NORMALIZE", "cheap", 2000, 0, LIGHT_MED, { schemaMode: "strict" }),
+  SOLUTION_PRIMARY:      P("SOLUTION_PRIMARY", "quality", 4000, 0, HEAVY_HIGH, { schemaMode: "strict", thinkingBudget: 1024, temperature: 0.4, timeoutMs: 120_000, requiresHumanReview: true }),
+  SOLUTION_FALLBACK:     P("SOLUTION_FALLBACK", "cheap", 3000, 2, HEAVY_MED, { schemaMode: "strict", temperature: 0.6, requiresHumanReview: true }),
+  MODULE_GAP_ANALYSIS:   P("MODULE_GAP_ANALYSIS", "cheap", 1500, 1, LIGHT_LOW),
 
   // ---- 物料 ----
-  BOM_NORMALIZE:         P("BOM_NORMALIZE", "cheap", 2000, 1, { schemaMode: "strict" }),
-  PROCUREMENT_PLAN:      P("PROCUREMENT_PLAN", "cheap", 1500, 2),
+  BOM_NORMALIZE:         P("BOM_NORMALIZE", "cheap", 2000, 1, LIGHT_MED, { schemaMode: "strict" }),
+  PROCUREMENT_PLAN:      P("PROCUREMENT_PLAN", "cheap", 1500, 2, LIGHT_LOW),
 
   // ---- 代码 ----
-  CODE_GENERATE:         P("CODE_GENERATE", "quality", 3000, 1, { schemaMode: "strict", timeoutMs: 120_000 }),
-  CODE_REPAIR:           P("CODE_REPAIR", "quality", 3000, 0, { thinkingBudget: 1024, allowCache: false }),
-  BUILD_LOG_EXPLAIN:     P("BUILD_LOG_EXPLAIN", "cheap", 1200, 2),
+  CODE_GENERATE:         P("CODE_GENERATE", "quality", 3000, 1, HEAVY_HIGH, { schemaMode: "strict", timeoutMs: 120_000 }),
+  CODE_REPAIR:           P("CODE_REPAIR", "quality", 3000, 0, HEAVY_HIGH, { thinkingBudget: 1024, allowCache: false }),
+  BUILD_LOG_EXPLAIN:     P("BUILD_LOG_EXPLAIN", "cheap", 1200, 2, LIGHT_LOW),
 
   // ---- 测试与调试 ----
-  TEST_PLAN:             P("TEST_PLAN", "cheap", 2500, 1, { schemaMode: "strict" }),
-  TEST_ANALYSIS:         P("TEST_ANALYSIS", "cheap", 1500, 0),
-  DEBUG_ASSIST:          P("DEBUG_ASSIST", "quality", 1500, 0, { thinkingBudget: 512, allowCache: false }),
+  TEST_PLAN:             P("TEST_PLAN", "cheap", 2500, 1, LIGHT_MED, { schemaMode: "strict" }),
+  TEST_ANALYSIS:         P("TEST_ANALYSIS", "cheap", 1500, 0, LIGHT_LOW),
+  DEBUG_ASSIST:          P("DEBUG_ASSIST", "quality", 1500, 0, LIGHT_MED, { thinkingBudget: 512, allowCache: false }),
 
   // ---- 报告 ----
-  REPORT_SECTION:        P("REPORT_SECTION", "cheap", 2500, 2),
-  REPORT_POLISH:         P("REPORT_POLISH", "cheap", 1200, 3, { temperature: 0.5 }),
+  REPORT_SECTION:        P("REPORT_SECTION", "cheap", 2500, 2, HEAVY_MED),
+  REPORT_POLISH:         P("REPORT_POLISH", "cheap", 1200, 3, LIGHT_LOW, { temperature: 0.5 }),
 
   // ---- 其他 ----
-  GENERAL_QA:            P("GENERAL_QA", "cheap", 1500, 3, { cacheScope: "global" }),
+  GENERAL_QA:            P("GENERAL_QA", "cheap", 1500, 3, LIGHT_LOW, { cacheScope: "global" }),
 };
 
 export function policyFor(taskType: TaskType): TaskPolicy {

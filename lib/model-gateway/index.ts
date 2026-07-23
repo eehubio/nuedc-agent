@@ -2,6 +2,7 @@ import type { z } from "zod";
 import { route } from "./router";
 import { policyFor, type TaskType } from "./task-policy";
 import { recordCall } from "./health";
+import { recordTaskCall, taskTypeHealthy } from "./task-health";
 import { buildCacheKey, cacheGet, cacheSet, cacheDelete, inputHash, taskDedupKey } from "./cache";
 import { recordUsageEvent, checkBudget, estimateCost } from "./telemetry";
 import { ProviderError, type ChatMessage } from "./providers";
@@ -37,6 +38,8 @@ export interface GatewayRequest<T = unknown> {
   /** 参与缓存 key 的版本标识 */
   problemVersion?: string;
   moduleCatalogVersion?: string;
+  /** 外部取消信号，透传给 Provider，触发后正在进行的调用被 abort */
+  signal?: AbortSignal;
 }
 
 export interface GatewayResult<T = unknown> {
@@ -113,6 +116,15 @@ export const modelGateway = {
       return { ...base, errorCode: "NO_PROVIDER", message: reason, degraded: { mode: "RULES_ONLY", reason }, latency: Date.now() - t0 };
     }
 
+    // 按 TaskType 质量健康过滤：schema/parse 长期失败的 Provider 不再承担该 TaskType，
+    // 即便它 HTTP 一直 200。至少保留一个候选（全不健康时降级用第一候选，避免完全无服务）。
+    let usable = candidates;
+    try {
+      const flags = await Promise.all(candidates.map((c) => taskTypeHealthy(c.provider.id, c.model, req.taskType)));
+      const filtered = candidates.filter((_, i) => flags[i]);
+      if (filtered.length) usable = filtered;
+    } catch { /* 健康表不可用时不过滤 */ }
+
     // 4) 缓存：按候选逐个查各自的 key（缓存归属实际产出者，不能只查第一候选）
     const allowCache = req.allowCache ?? policy.allowCache;
     const keyFor = (provider: string, model: string) => buildCacheKey({
@@ -168,12 +180,16 @@ export const modelGateway = {
     let lastErrorCode: string | null = null;
     let lastValidation: { ok: boolean; issues?: string[] } | null = null;
 
-    for (let ci = 0; ci < candidates.length; ci++) {
-      const { provider, model } = candidates[ci];
+    for (let ci = 0; ci < usable.length; ci++) {
+      const { provider, model } = usable[ci];
       if (ci > 0) fallbackUsed = true;
 
       for (let attempt = 0; attempt <= policy.maxRetries; attempt++) {
         const callStart = Date.now();
+        // 已被取消：不再发起新的 Provider 调用，直接返回 CANCELED
+        if (req.signal?.aborted) {
+          return { ...base, errorCode: "CANCELED", message: "请求已取消", retryCount, fallbackUsed, latency: Date.now() - t0 };
+        }
         try {
           const res = await provider.complete({
             system: req.system,
@@ -186,10 +202,13 @@ export const modelGateway = {
             pdfBase64: req.pdfBase64,
             imageBase64: req.imageBase64,
             imageMime: req.imageMime,
+            signal: req.signal,
           }, model);
 
           const latencyMs = Date.now() - callStart;
           await recordCall({ provider: provider.id, ok: true, latencyMs });
+          // 传输层成功（HTTP 200 且拿到响应）
+          await recordTaskCall({ provider: provider.id, model, taskType: req.taskType, dimension: "transport", ok: true });
 
           // 解析 + Schema 校验
           let output: any = res.text;
@@ -199,6 +218,7 @@ export const modelGateway = {
             const parsed = extractJson(res.text);
             if (!parsed) {
               lastError = new Error("模型输出无法解析为 JSON");
+              await recordTaskCall({ provider: provider.id, model, taskType: req.taskType, dimension: "parse", ok: false });
               await recordUsageEvent({
                 owner: req.owner, projectId: req.projectId, taskId: req.taskId, taskType: req.taskType,
                 provider: provider.id, model, inputTokens: res.inputTokens, outputTokens: res.outputTokens,
@@ -206,12 +226,15 @@ export const modelGateway = {
               });
               continue;   // 换下一次尝试
             }
+            await recordTaskCall({ provider: provider.id, model, taskType: req.taskType, dimension: "parse", ok: true });
             output = parsed.parsed;
             partial = partial || parsed.partial;
             if (req.schema && policy.schemaMode !== "none") {
               const v = req.schema.safeParse(output);
-              if (v.success) output = v.data;
+              if (v.success) { output = v.data; }
               else validation = { ok: false, issues: v.error.issues.slice(0, 5).map((i) => `${i.path.join(".")}: ${i.message}`) };
+              // 记录 schema 维度（strict/warn 都记，用于判定该 Provider 对该 TaskType 的可用性）
+              await recordTaskCall({ provider: provider.id, model, taskType: req.taskType, dimension: "schema", ok: v.success });
             }
           }
 
@@ -236,7 +259,7 @@ export const modelGateway = {
           }
 
           return {
-            ok: true, provider: provider.id, model, routingReason: candidates[ci].reason,
+            ok: true, provider: provider.id, model, routingReason: usable[ci].reason,
             output: output as T, rawText: res.text,
             usage: { inputTokens: res.inputTokens, outputTokens: res.outputTokens, cachedTokens: 0 },
             latency: Date.now() - t0, cacheHit: false, fallbackUsed, retryCount,
@@ -244,9 +267,18 @@ export const modelGateway = {
           };
         } catch (e: any) {
           const latencyMs = Date.now() - callStart;
+          // 取消：立即停止，不重试、不换 Provider
+          if (e?.name === "AbortError" || (e instanceof ProviderError && e.code === "CANCELED") || req.signal?.aborted) {
+            await recordCall({ provider: provider.id, ok: false, latencyMs, errorCode: "CANCELED" });
+            return { ...base, errorCode: "CANCELED", message: "请求已取消", retryCount, fallbackUsed, latency: Date.now() - t0 };
+          }
           const pe = e instanceof ProviderError ? e : new ProviderError(String(e?.message || e), "UNKNOWN", false);
           lastError = pe;
           await recordCall({ provider: provider.id, ok: false, latencyMs, errorCode: pe.code });
+          // 传输层失败维度
+          await recordTaskCall({ provider: provider.id, model, taskType: req.taskType, dimension: "transport", ok: false });
+          if (pe.code === "TIMEOUT") await recordTaskCall({ provider: provider.id, model, taskType: req.taskType, dimension: "timeout" });
+          if (pe.code === "RATE_LIMIT") await recordTaskCall({ provider: provider.id, model, taskType: req.taskType, dimension: "rate429" });
           await recordUsageEvent({
             owner: req.owner, projectId: req.projectId, taskId: req.taskId, taskType: req.taskType,
             provider: provider.id, model, inputTokens: 0, outputTokens: 0,
@@ -282,5 +314,6 @@ export { policyFor, TASK_POLICIES, TASK_TYPES, AGENT_TASK_TYPE } from "./task-po
 export type { TaskType } from "./task-policy";
 export { routingSnapshot } from "./router";
 export { healthSnapshot, enable as enableProvider, disable as disableProvider } from "./health";
+export { taskHealthSnapshot } from "./task-health";
 export { usageSummary, checkBudget } from "./telemetry";
 export { configuredProviders } from "./providers";

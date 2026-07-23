@@ -37,9 +37,25 @@ function log(...args: any[]) {
 
 async function executeOne(task: ClaimedTask): Promise<void> {
   inFlight++;
+  const abort = new AbortController();
+  let canceledByPoll = false;
+
+  // 心跳续租 + 取消轮询合并到一个定时器：既保活，又能真正中断 Provider 调用
   const hb = setInterval(async () => {
     const alive = await heartbeat(task.task_id, WORKER_ID);
-    if (!alive) log(`⚠ ${task.task_id} 租约已失效（可能已被回收），本次结果将被丢弃`);
+    if (!alive) {
+      log(`⚠ ${task.task_id} 租约已失效（可能已被回收），本次结果将被丢弃`);
+      return;
+    }
+    // 周期检查取消标记：置位则 abort，正在进行的 Provider 请求立即中断
+    const c = await db().execute({
+      sql: "SELECT cancel_requested FROM agent_tasks WHERE task_id=?", args: [task.task_id],
+    }).catch(() => ({ rows: [] as any[] }));
+    if (Number((c.rows[0] as any)?.cancel_requested || 0) === 1 && !abort.signal.aborted) {
+      canceledByPoll = true;
+      abort.abort();
+      log(`✋ ${task.task_id} 收到取消请求，正在中断 Provider 调用`);
+    }
   }, HEARTBEAT_MS);
 
   try {
@@ -50,13 +66,13 @@ async function executeOne(task: ClaimedTask): Promise<void> {
       if (rs.rows.length) stage = String(rs.rows[0].stage) as ProjectStage;
     }
 
-    // 执行期间被请求取消 → 结果作废（LLM 调用无法中途打断，只能事后判定）
+    // 执行前已被请求取消 → 直接作废，不发起任何 Provider 调用
     const cancelCheck = await db().execute({
       sql: "SELECT cancel_requested FROM agent_tasks WHERE task_id=?", args: [task.task_id],
     }).catch(() => ({ rows: [] as any[] }));
     if (Number((cancelCheck.rows[0] as any)?.cancel_requested || 0) === 1) {
       await completeTask({ taskId: task.task_id, workerId: WORKER_ID, ok: false, canceled: true, result: null });
-      log(`✋ ${task.task_id} 已取消`);
+      log(`✋ ${task.task_id} 已取消（未开始，全额退款）`);
       return;
     }
 
@@ -66,26 +82,32 @@ async function executeOne(task: ClaimedTask): Promise<void> {
       tier: task.tier as any,
       owner: task.owner_ref,
       taskId: task.task_id,
+      signal: abort.signal,
     });
 
     const canceled = await db().execute({
       sql: "SELECT cancel_requested FROM agent_tasks WHERE task_id=?", args: [task.task_id],
     }).catch(() => ({ rows: [] as any[] }));
-    const wasCanceled = Number((canceled.rows[0] as any)?.cancel_requested || 0) === 1;
+    const wasCanceled = canceledByPoll || Number((canceled.rows[0] as any)?.cancel_requested || 0) === 1
+      || result.error_code === "CANCELED";
 
-    if (result.ok || wasCanceled) {
-      // 成功 → success 终态并结算；取消 → canceled 终态并退款（已用 token 仍计费）
+    if (wasCanceled) {
+      // 取消：canceled 终态。completeTask 会按实际用量计费、未用部分退款（配额 refund）。
       await completeTask({
         taskId: task.task_id, workerId: WORKER_ID,
-        ok: result.ok, canceled: wasCanceled, result, runId: result.run_id,
-        errorCode: null,
+        ok: false, canceled: true, result, runId: result.run_id, errorCode: "CANCELED",
       });
-      log(`${wasCanceled ? "✋" : "✓"} ${task.task_id} ${task.agent_type} (${task.task_type || "-"})`);
+      log(`✋ ${task.task_id} ${task.agent_type} 已取消（已用 token 计费，未用部分退款）`);
+    } else if (result.ok) {
+      await completeTask({
+        taskId: task.task_id, workerId: WORKER_ID,
+        ok: true, canceled: false, result, runId: result.run_id, errorCode: null,
+      });
+      log(`✓ ${task.task_id} ${task.agent_type} (${task.task_type || "-"})`);
     } else {
       // Agent 失败：结构化错误决定重试还是终态
       const retryable = result.retryable === true || isRetryable(result.error_code);
       if (retryable) {
-        // 可重试 → 重新入队（未达上限）或进死信退款（已达上限）
         const outcome = await failTask({
           taskId: task.task_id, workerId: WORKER_ID,
           message: result.message || "agent failed",
@@ -93,7 +115,6 @@ async function executeOne(task: ClaimedTask): Promise<void> {
         });
         log(`↻ ${task.task_id} ${task.agent_type} 失败(${result.error_code}) → ${outcome}: ${(result.message || "").slice(0, 60)}`);
       } else {
-        // 不可重试 → 直接写 error 终态并结算（退款）
         await completeTask({
           taskId: task.task_id, workerId: WORKER_ID,
           ok: false, canceled: false, result, runId: result.run_id,
@@ -103,15 +124,20 @@ async function executeOne(task: ClaimedTask): Promise<void> {
       }
     }
   } catch (e: any) {
-    // 未被 runAgent 归类的意外异常（多为基础设施类）：按错误码判定，默认可重试瞬时错误
-    const msg = String(e?.message || e);
-    const code = classifyAgentError(msg);
-    const retryable = isRetryable(code) || /timeout|ECONN|fetch failed|socket|502|503|504/i.test(msg);
-    const outcome = await failTask({
-      taskId: task.task_id, workerId: WORKER_ID, message: msg,
-      errorCode: code, retryable,
-    });
-    log(`✗ ${task.task_id} 异常(${code}) → ${outcome}: ${msg.slice(0, 100)}`);
+    // 取消触发的异常：按取消处理，而非重试
+    if (canceledByPoll || abort.signal.aborted) {
+      await completeTask({ taskId: task.task_id, workerId: WORKER_ID, ok: false, canceled: true, result: null, errorCode: "CANCELED" }).catch(() => {});
+      log(`✋ ${task.task_id} 取消中断`);
+    } else {
+      const msg = String(e?.message || e);
+      const code = classifyAgentError(msg);
+      const retryable = isRetryable(code) || /timeout|ECONN|fetch failed|socket|502|503|504/i.test(msg);
+      const outcome = await failTask({
+        taskId: task.task_id, workerId: WORKER_ID, message: msg,
+        errorCode: code, retryable,
+      });
+      log(`✗ ${task.task_id} 异常(${code}) → ${outcome}: ${msg.slice(0, 100)}`);
+    }
   } finally {
     clearInterval(hb);
     inFlight--;
