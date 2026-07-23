@@ -2,6 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { db, uid, ensureSchema } from "../db";
 import type { AgentType, ProjectStage } from "../types";
 import { STAGE_ALLOWED_AGENTS } from "../types";
+import { saveArtifact } from "../artifacts";
+import { AGENT_CONSUMES } from "../artifact-graph";
 
 export interface AgentContext {
   owner?: string | null;
@@ -168,8 +170,6 @@ async function runAgentInner(
     await logRun(runId, ctx, type, input, result, Date.now() - t0, "ok");
     // Artifact 落库：版本递增 + 方案变更自动级联失效下游
     if (result.ok && result.artifact_type) {
-      const { saveArtifact } = await import("../artifacts");
-      const { AGENT_CONSUMES } = await import("../artifact-graph");
       // 实例级溯源：查本 Agent 消费的上游类型当前最新版本 id
       let sourceIds: string[] = [];
       if (ctx.projectId && AGENT_CONSUMES[type]?.length) {

@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { SCHEMA_SQL } from "./db";
+import { SCHEMA_SQL } from "./schema";
 
 /** 版本化数据库迁移（诊断 5.4）。
  *  - 每个迁移一个编号，执行过的记录在 schema_migrations 表

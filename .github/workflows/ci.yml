@@ -16,6 +16,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node 20 与 Railway/Docker 镜像一致；Node 22 覆盖本地开发环境。
+        # 二者对 data: URL 的模块解析严格程度不同（tsx 下会出现只在 20 上复现的
+        # ERR_UNSUPPORTED_RESOLVE_REQUEST），所以两个版本都必须跑。
+        node-version: ["20", "22"]
+
     env:
       # 集成测试用进程内 Postgres（pglite），不需要外部数据库服务。
       # 这里给一个占位串，仅用于让 lib/db.ts 的 conn() 不抛「缺少 DATABASE_URL」。
@@ -29,11 +37,15 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - name: Install
         run: npm ci
+
+      # Worker 启动冒烟测试用它跑真实进程，与 Railway 的 Node 20 对齐
+      - name: Expose Node binary for startup smoke test
+        run: echo "NODE20_BIN=$(which node)" >> $GITHUB_ENV
 
       - name: Lint
         run: npm run lint

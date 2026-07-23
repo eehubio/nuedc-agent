@@ -30,7 +30,6 @@ export interface LlmOptions {
  *  新代码请直接使用 modelGateway.run()，以获得 taskType 级策略、缓存与遥测。 */
 export async function llmComplete(opts: LlmOptions): Promise<string> {
   if (process.env.GATEWAY_ENABLED !== "0") {
-    const { modelGateway } = await import("./model-gateway");
     const r = await modelGateway.run({
       taskType: (opts.taskType as any) || "GENERAL_QA",
       system: opts.system,
@@ -56,71 +55,24 @@ async function llmCompleteDirect(opts: LlmOptions): Promise<string> {
   return openaiComplete(opts);
 }
 
-/** 请求模型只输出 JSON，并做防御性解析（剥离 ```json 围栏、截取首尾大括号）。 */
-/** 修复被 token 上限截断的 JSON：回退到最后一个完整的元素边界，再补齐闭合符。
- *  截断是长输出的常见失败模式，直接报错会让整次调用（和费用）白白浪费。 */
-export function repairTruncatedJson(text: string): string | null {
-  const start = text.indexOf("{");
-  if (start < 0) return null;
+// repairTruncatedJson 已移到 lib/json-repair.ts（打破与 model-gateway 的循环依赖），此处转出以兼容既有引用
+export { repairTruncatedJson } from "./json-repair";
 
-  // 单遍扫描：记录每个「完整元素结束」的位置及其时刻的容器栈深度
-  type Mark = { pos: number; depth: number };
-  const marks: Mark[] = [];
-  const stack: string[] = [];
-  let inStr = false, esc = false, sawValue = false;
-
-  for (let i = start; i < text.length; i++) {
-    const c = text[i];
-    if (esc) { esc = false; continue; }
-    if (c === "\\") { esc = true; continue; }
-    if (c === '"') {
-      inStr = !inStr;
-      if (!inStr) { sawValue = true; marks.push({ pos: i, depth: stack.length }); }
-      continue;
-    }
-    if (inStr) continue;
-    if (c === "{" || c === "[") { stack.push(c === "{" ? "}" : "]"); sawValue = false; }
-    else if (c === "}" || c === "]") { stack.pop(); sawValue = true; marks.push({ pos: i, depth: stack.length }); }
-    else if (c === "," ) { sawValue = false; }
-    else if (/[0-9truefalsn.eE+-]/.test(c)) {
-      // 数字/布尔/null 的结束以下一个分隔符判定
-      const next = text[i + 1];
-      if (next === undefined || /[\s,}\]]/.test(next)) { sawValue = true; marks.push({ pos: i, depth: stack.length }); }
-    }
-  }
-
-  if (!stack.length) {
-    const end = text.lastIndexOf("}");
-    return end > start ? text.slice(start, end + 1) : null;
-  }
-
-  // 截断：从后往前找一个「值刚结束」的位置，且它不是某个键名（键名后面跟冒号）
-  for (let k = marks.length - 1; k >= 0; k--) {
-    const m = marks[k];
-    const after = text.slice(m.pos + 1, m.pos + 40);
-    if (/^\s*:/.test(after)) continue;          // 这是键名，不是值 → 不能在此截断
-    let body = text.slice(start, m.pos + 1);
-    // 补齐该位置所需的闭合符（栈的前 depth 层）
-    const need = stack.slice(0, m.depth).reverse();
-    body += need.join("");
-    try { JSON.parse(body); return body; } catch { /* 继续往前找 */ }
-  }
-  return null;
-}
+// 静态 import：动态 import 在 tsx 的 data: URL 编译模式下无法解析相对路径
+import { modelGateway } from "./model-gateway";
+import { AGENT_TASK_TYPE } from "./model-gateway/task-policy";
+import { currentAgentContext, markPartial } from "./agents/base";
 
 
 /** 兼容层：旧 Agent 调用点继续可用，内部**单次转发**到网关。
  *  JSON 解析、截断修复、重试全部由网关统一负责，此处不得重复实现
  *  （否则重试次数翻倍、修复逻辑分叉，且模块级状态会并发串线）。 */
 export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
-  const { modelGateway } = await import("./model-gateway");
-  const { AGENT_TASK_TYPE } = await import("./model-gateway/task-policy");
 
   // 自动附加当前 Agent 上下文（ALS，天然并发安全）
   let auto: Partial<LlmOptions> = {};
   let signal: AbortSignal | undefined;
   try {
-    const { currentAgentContext } = await import("./agents/base");
     const c = currentAgentContext();
     auto = {
       owner: opts.owner ?? c.owner,
@@ -148,7 +100,7 @@ export async function llmJson<T = unknown>(opts: LlmOptions): Promise<T> {
 
   if (!r.ok) throw new GatewayCallError(r.message || "模型调用失败", r.errorCode, r.validation?.issues);
   if (r.partial) {
-    try { const { markPartial } = await import("./agents/base"); markPartial(); } catch { /* 非 Agent 环境 */ }
+    try { markPartial(); } catch { /* 非 Agent 环境 */ }
   }
   return r.output as T;
 }

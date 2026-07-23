@@ -7,7 +7,7 @@ import { buildCacheKey, cacheGet, cacheSet, cacheDelete, inputHash, taskDedupKey
 import { recordUsageEvent, checkBudget, estimateCost } from "./telemetry";
 import { ProviderError, type ChatMessage } from "./providers";
 import { getSystemMode, allowsPriority } from "../system-mode";
-import { repairTruncatedJson } from "../llm";
+import { repairTruncatedJson } from "../json-repair";
 
 /** 统一模型网关：所有 Agent 的唯一模型入口。
  *  Agent 不得自行拼 Provider URL，也不得自己决定用哪家模型。 */

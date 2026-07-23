@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { db, ensureSchema, uid } from "./db";
+import { withTransaction } from "./db";
 
 /** 赛题中心（规范化模型）。
  *  official_problems 只存题目主体；每次发布产生不可变的 problem_versions，
@@ -462,7 +463,6 @@ export async function addReview(versionId: string, reviewer: string, decision: "
 export async function publishVersion(versionId: string, publishedBy: string, override = false):
   Promise<{ ok: boolean; error?: string; checklist?: ChecklistItem[] }> {
   await ensureSchema();
-  const { withTransaction } = await import("./db");
 
   try {
     return await withTransaction(async (tx) => {
