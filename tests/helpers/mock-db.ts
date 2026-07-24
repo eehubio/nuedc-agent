@@ -56,6 +56,7 @@ export async function setupMockDb(): Promise<MockDbContext> {
   process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://mock/mock";
   // 让 withTransaction 走 pglite 有状态路径，而非 neon Pool
   process.env.PGLITE_TEST = "1";
+  process.env.DB_DRIVER = "pglite";   // 显式声明驱动，不依赖自动判断
 
   // 同一测试文件内复用同一个 pglite 实例与已跑过的迁移
   if (!active) {

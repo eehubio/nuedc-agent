@@ -196,7 +196,7 @@ describe("四、CI 关键冒烟真正阻断", () => {
   });
 
   it("服务清理与日志上传不因失败中断（清理步骤允许 || true）", () => {
-    const stop = ci.slice(ci.indexOf("- name: Stop server"), ci.indexOf("- name: Build"));
+    const stop = ci.slice(ci.indexOf("- name: Stop server"), ci.indexOf("- name: Upload test reports"));
     expect(stop).toMatch(/if: always\(\)/);
     // 清理本身失败不应让 job 红灯
     expect(stop).toMatch(/\|\| true/);

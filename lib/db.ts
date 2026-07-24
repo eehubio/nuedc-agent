@@ -19,11 +19,20 @@ export interface Executor {
 
 let _sql: any = null;
 
+/** 数据库驱动种类。
+ *  neon_http     —— Neon 的 HTTP /sql API（Vercel 生产用，Serverless 友好）
+ *  postgres_pool —— node-postgres 的 TCP 连接池（CI、自建 Postgres）
+ *  pglite        —— 进程内 Postgres（测试）
+ *
+ *  显式配置优先；未配置时才按 DATABASE_URL 自动判断。
+ *  普通查询与事务必须解析到同一种驱动 —— 否则会出现"查询走 A、事务走 B"，
+ *  事务里看不到查询写入的数据。 */
+export type DbDriver = "neon_http" | "postgres_pool" | "pglite";
+
 /** 是否为 Neon 云端点。
  *  neon() 是 HTTP 驱动，只能连 Neon 的 /sql API —— 它会把 host 拼成
  *  https://api.<host>/sql。指向标准 Postgres（如 CI 里的 127.0.0.1:5432）
- *  会得到 "Failed to parse URL from https://api.0.0.1/sql" 这类错误。
- *  因此非 Neon 主机必须改用基于 TCP/WebSocket 的 Pool。 */
+ *  会得到 "Failed to parse URL from https://api.0.0.1/sql" 这类错误。 */
 function isNeonHost(url: string): boolean {
   try {
     const h = new URL(url).hostname;
@@ -33,17 +42,35 @@ function isNeonHost(url: string): boolean {
   }
 }
 
+/** 解析当前应使用的驱动。查询路径与事务路径都调用它，保证一致。 */
+export function resolveDbDriver(): DbDriver {
+  const explicit = (process.env.DB_DRIVER || "").trim().toLowerCase();
+  if (explicit) {
+    if (explicit === "neon_http" || explicit === "postgres_pool" || explicit === "pglite") {
+      return explicit;
+    }
+    throw new Error(
+      `DB_DRIVER 取值非法：${explicit}。可选：neon_http | postgres_pool | pglite`
+    );
+  }
+  // 未显式配置：向后兼容的自动判断
+  if (process.env.PGLITE_TEST === "1") return "pglite";
+  const url = process.env.DATABASE_URL || "";
+  if (!url.startsWith("postgres")) return "pglite";
+  return isNeonHost(url) ? "neon_http" : "postgres_pool";
+}
+
 /** 标准 Postgres（CI / 自建）走 node-postgres 的 Pool。
- *  注意不能用 @neondatabase/serverless 的 Pool —— 它基于 WebSocket，
- *  同样连不上普通的 TCP Postgres。pg 只在 devDependencies，
- *  生产（Vercel + Neon）永远走上面的 HTTP 分支，不会加载它。 */
+ *  不能用 @neondatabase/serverless 的 Pool —— 它基于 WebSocket，
+ *  同样连不上普通的 TCP Postgres。pg 已在 dependencies，
+ *  因此 npm ci --omit=dev 的生产环境也能加载。 */
 function pgPoolConn(url: string) {
   let Pool: any;
   try {
     ({ Pool } = require("pg"));
   } catch {
     throw new Error(
-      "DATABASE_URL 指向非 Neon 主机，需要 node-postgres 驱动。请安装：npm i -D pg"
+      "DB_DRIVER=postgres_pool 需要 node-postgres 驱动，但 require(\"pg\") 失败。请确认 pg 在 dependencies 中。"
     );
   }
   const pool = new Pool({
@@ -72,14 +99,13 @@ function conn() {
       "缺少 DATABASE_URL。请在 Neon 控制台复制连接串（postgresql://...），本地写入 .env.local，线上配置到 Vercel 环境变量。"
     );
   }
-  // 测试环境（pglite）：neon 模块已被 mock 成进程内 Postgres，必须走这条分支，
-  // 否则会被当成"非 Neon 主机"而去连真实 TCP（测试里没有这样的库）。
-  if (process.env.PGLITE_TEST === "1") {
+  const driver = resolveDbDriver();
+  // pglite（测试）：neon 模块已被 mock 成进程内 Postgres，必须走 neon() 这条分支
+  if (driver === "pglite" || driver === "neon_http") {
     _sql = neon(url);
     return _sql;
   }
-  // Neon 云端用 HTTP 驱动（Serverless 友好）；其余用 node-postgres（CI / 自建）
-  _sql = isNeonHost(url) ? neon(url) : pgPoolConn(url);
+  _sql = pgPoolConn(url);
   return _sql;
 }
 
@@ -113,7 +139,9 @@ export function txPool() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("缺少 DATABASE_URL");
   // 与 conn() 同理：Neon 云端用其 WebSocket Pool，标准 Postgres 用 node-postgres
-  const { Pool } = isNeonHost(url) ? require("@neondatabase/serverless") : require("pg");
+  // 与 conn() 使用同一套驱动解析，保证查询与事务落在同一种驱动上
+  const driver = resolveDbDriver();
+  const { Pool } = driver === "neon_http" ? require("@neondatabase/serverless") : require("pg");
   _pool = new Pool({
     connectionString: url,
     max: Number(process.env.DB_POOL_MAX || 10),                     // 连接上限
@@ -159,7 +187,7 @@ export function txPoolStats(): { total: number; idle: number; waiting: number; m
  *  测试环境（pglite）本身有状态，直接在同一连接上 BEGIN/COMMIT 即可。 */
 export async function withTransaction<T>(fn: (tx: Executor) => Promise<T>): Promise<T> {
   // pglite（测试）：conn() 已是有状态连接，直接用它跑 BEGIN/COMMIT
-  if (process.env.PGLITE_TEST === "1" || !process.env.DATABASE_URL?.startsWith("postgres")) {
+  if (resolveDbDriver() === "pglite") {
     return txOnConn(conn(), fn);
   }
   const pool = txPool();
