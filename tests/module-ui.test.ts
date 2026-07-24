@@ -208,3 +208,27 @@ describe("健康探针与运维能力", () => {
     expect(doc).toContain("不需要改任何代码");
   });
 });
+
+describe("压测费用保护的适用范围", () => {
+  it("queue-only 不调用模型，不应被费用确认门槛拦截", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("scripts/load-test.mts", "utf8");
+    // 门槛必须排除 queue-only，否则 CI 会以 exit 1 失败
+    expect(src).toContain('MODE !== "queue-only"');
+  });
+
+  it("full 模式仍保留费用确认门槛", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("scripts/load-test.mts", "utf8");
+    expect(src).toContain("ALLOW_MOCK_ASSUMED");
+    expect(src).toContain("会产生真实模型费用");
+  });
+
+  it("CI 的 queue smoke 显式声明 mock 与确认变量（双保险）", async () => {
+    const fs = await import("node:fs");
+    const ci = fs.readFileSync(".github/workflows/ci.yml", "utf8");
+    const step = ci.slice(ci.indexOf("Queue smoke"));
+    expect(step).toContain('ENABLE_MOCK_PROVIDER: "1"');
+    expect(step).toContain('ALLOW_MOCK_ASSUMED: "1"');
+  });
+});

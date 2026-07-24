@@ -98,6 +98,7 @@ jobs:
           ENABLE_MOCK_PROVIDER: "1"
           ALLOW_INLINE_EXECUTE: "1"
           ADMIN_API_KEY: ci-smoke-admin-key
+          ALLOW_MOCK_ASSUMED: "1"
         run: |
           set -o pipefail
           mkdir -p reports

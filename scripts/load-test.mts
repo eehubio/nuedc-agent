@@ -22,7 +22,9 @@ const POLL_TIMEOUT_MS = Number(arg("timeout", process.env.LOAD_TIMEOUT_SEC || "3
 const MODE = (arg("mode", process.env.LOAD_MODE || "full") as "full" | "queue-only");
 const OUT_FILE = arg("out", process.env.LOAD_OUT || "");
 
-if (!REAL && !process.env.ALLOW_MOCK_ASSUMED) {
+// 费用保护：full 模式会真正触发模型执行，需显式确认；
+// queue-only 只验入队链路、不调用任何 Provider，无需此门槛。
+if (!REAL && MODE !== "queue-only" && !process.env.ALLOW_MOCK_ASSUMED) {
   console.log("⚠ 默认按 mock provider 压测。请确认服务端已设 ENABLE_MOCK_PROVIDER=1，否则会产生真实模型费用。");
   console.log("  确认无误请加环境变量 ALLOW_MOCK_ASSUMED=1 重跑；使用真实模型请加 --real。\n");
   process.exit(1);
