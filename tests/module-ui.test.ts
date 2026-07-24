@@ -108,3 +108,34 @@ describe("缩略图高度不得塌陷（回归防护）", () => {
     for (const m of mods) expect(Array.isArray(m.images), m.id).toBe(true);
   });
 });
+
+describe("依赖与 CI 一致性", () => {
+  it("lockfile 与 package.json 依赖完全对应（npm ci 的前提）", async () => {
+    const fs = await import("node:fs");
+    const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+    const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+    const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+    const root = lock.packages?.[""] || {};
+    const locked = { ...(root.dependencies || {}), ...(root.devDependencies || {}) };
+    const missing = Object.keys(deps).filter((k) => !(k in locked));
+    expect(missing, `lockfile 缺少依赖，npm ci 会失败：${missing.join(", ")}`).toHaveLength(0);
+  });
+
+  it("package.json 里用到的脚本命令都已定义", async () => {
+    const fs = await import("node:fs");
+    const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+    for (const s of ["lint", "typecheck", "test", "build", "verify:docx", "e2e", "load-test", "worker", "db:init"]) {
+      expect(pkg.scripts?.[s], `缺少脚本 ${s}`).toBeTruthy();
+    }
+  });
+
+  it("CI 覆盖 lint/typecheck/test/build 全流程", async () => {
+    const fs = await import("node:fs");
+    const ci = fs.readFileSync(".github/workflows/ci.yml", "utf8");
+    for (const step of ["npm run lint", "npm run typecheck", "npm test", "npm run build"]) {
+      expect(ci, `CI 缺少 ${step}`).toContain(step);
+    }
+    // CI 必须强制校验 mock，避免烧真实费用
+    expect(ci).toContain("mock_enabled");
+  });
+});
