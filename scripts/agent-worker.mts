@@ -160,4 +160,9 @@ async function main() {
   ]);
 }
 
-main().catch((e) => { console.error("Worker 致命错误:", e); process.exit(1); });
+// 冒烟测试用：只验证模块能被完整加载，不进入主循环
+if (process.env.WORKER_SMOKE_IMPORT_ONLY === "1") {
+  console.log("[smoke] Worker 模块加载成功");
+} else {
+  main().catch((e) => { console.error("Worker 致命错误:", e); process.exit(1); });
+}

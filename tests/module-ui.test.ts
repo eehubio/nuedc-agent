@@ -75,3 +75,136 @@ describe("导航与流程", () => {
     expect(src).toContain("已从「模块选型」选用");
   });
 });
+
+describe("缩略图高度不得塌陷（回归防护）", () => {
+  it("thumb 有明确高度，不依赖会与内联样式冲突的 aspect-ratio", async () => {
+    const fs = await import("node:fs");
+    const css = fs.readFileSync("app/globals.css", "utf8");
+    // 基础高度必须存在
+    expect(css).toMatch(/\.mod-card \.thumb \{[\s\S]*?height:\s*74px/);
+    // 不能再出现 height:auto + aspect-ratio 的组合（首页卡片曾因此塌成 0 高）
+    expect(css).not.toMatch(/\.mod-card \.thumb \{ aspect-ratio: 1 \/ 1; height: auto/);
+  });
+
+  it("有图状态用 max-width/max-height 而非强制拉伸", async () => {
+    const fs = await import("node:fs");
+    const css = fs.readFileSync("app/globals.css", "utf8");
+    const block = css.slice(css.indexOf(".thumb.has-img img"));
+    expect(block).toContain("max-width: 100%");
+    expect(block).toContain("max-height: 100%");
+    expect(block).toContain("object-fit: contain");
+  });
+
+  it("后台 CMS 提供图片预览与删除", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("components/AdminClient.tsx", "utf8");
+    expect(src).toContain("module-gallery");
+    expect(src).toContain("图片无法加载");        // 防盗链时给出可操作提示
+  });
+
+  it("种子模块均含 images 字段（避免 undefined 导致渲染分支异常）", async () => {
+    const fs = await import("node:fs");
+    const mods = JSON.parse(fs.readFileSync("data/seed-modules.json", "utf8"));
+    for (const m of mods) expect(Array.isArray(m.images), m.id).toBe(true);
+  });
+});
+
+describe("依赖与 CI 一致性", () => {
+  it("lockfile 与 package.json 依赖完全对应（npm ci 的前提）", async () => {
+    const fs = await import("node:fs");
+    const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+    const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+    const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+    const root = lock.packages?.[""] || {};
+    const locked = { ...(root.dependencies || {}), ...(root.devDependencies || {}) };
+    const missing = Object.keys(deps).filter((k) => !(k in locked));
+    expect(missing, `lockfile 缺少依赖，npm ci 会失败：${missing.join(", ")}`).toHaveLength(0);
+  });
+
+  it("package.json 里用到的脚本命令都已定义", async () => {
+    const fs = await import("node:fs");
+    const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+    for (const s of ["lint", "typecheck", "test", "build", "verify:docx", "e2e", "load-test", "worker", "db:init"]) {
+      expect(pkg.scripts?.[s], `缺少脚本 ${s}`).toBeTruthy();
+    }
+  });
+
+  it("CI 覆盖 lint/typecheck/test/build 全流程", async () => {
+    const fs = await import("node:fs");
+    const ci = fs.readFileSync(".github/workflows/ci.yml", "utf8");
+    for (const step of ["npm run lint", "npm run typecheck", "npm test", "npm run build"]) {
+      expect(ci, `CI 缺少 ${step}`).toContain(step);
+    }
+  });
+
+  it("若 CI 含调用模型的 E2E/压测步骤，必须强制校验 mock 以免烧真实费用", async () => {
+    const fs = await import("node:fs");
+    const ci = fs.readFileSync(".github/workflows/ci.yml", "utf8");
+    const callsModel = /npm run e2e|npm run load-test|load-test\.mts/.test(ci);
+    if (!callsModel) return;   // 精简版 CI 不跑这些步骤，无需校验
+    expect(ci, "CI 会调用模型但未校验 mock_enabled").toContain("mock_enabled");
+  });
+});
+
+describe("健康探针与运维能力", () => {
+  it("/api/health 只答存活，不查数据库不调模型", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("app/api/health/route.ts", "utf8");
+    expect(src).not.toMatch(/db\(\)|ensureSchema|modelGateway/);
+    const mod: any = await import("@/app/api/health/route");
+    const res = await mod.GET();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe("ok");
+    expect(typeof body.uptime_seconds).toBe("number");
+  });
+
+  it("/api/ready 检查数据库/迁移/模型链路，不泄露密钥", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("app/api/ready/route.ts", "utf8");
+    expect(src).toContain("schema_migrations");     // 确认迁移已应用
+    expect(src).toContain("configuredProviders");   // 模型链路
+    // 快照仅对 admin 可见，且不含连接串明文
+    expect(src).toContain('resolveTier(req) === "admin"');
+    expect(src).not.toMatch(/process\.env\.DATABASE_URL\s*\}/);   // 不直接回传连接串
+  });
+
+  it("压测支持 queue-only 模式（CI 门禁用，不消耗模型）", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("scripts/load-test.mts", "utf8");
+    expect(src).toContain("queue-only");
+    expect(src).toContain("LOAD_MODE");
+    expect(src).toContain("DEDUP_FAILED");          // 幂等校验
+    expect(src).toContain("LOAD_OUT");              // JSON 输出供 CI 断言
+  });
+
+  it("压测结果断言脚本存在且检查关键指标", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("scripts/assert-load-result.mjs", "utf8");
+    for (const k of ["success_rate", "p95_seconds", "db_errors", "http_429"]) {
+      expect(src, `断言脚本缺少 ${k} 检查`).toContain(k);
+    }
+    expect(src).toContain("真实费用");               // 误用真实模型时告警
+  });
+
+  it("Worker 启动冒烟测试存在", async () => {
+    const fs = await import("node:fs");
+    expect(fs.existsSync("tests/worker-startup.test.ts")).toBe(true);
+  });
+
+  it(".mts 脚本纳入类型检查范围（此前是盲区）", async () => {
+    const fs = await import("node:fs");
+    const tsconfig = JSON.parse(fs.readFileSync("tsconfig.json", "utf8").replace(/\/\/.*/g, ""));
+    expect(tsconfig.include, "scripts/*.mts 不在检查范围内，缺失 import 无法被发现")
+      .toContain("**/*.mts");
+  });
+
+  it("国内模型接入文档存在且列出预置厂商", async () => {
+    const fs = await import("node:fs");
+    const doc = fs.readFileSync("docs/PROVIDER-SETUP.md", "utf8");
+    for (const p of ["QWEN_", "DEEPSEEK_", "GLM_", "MOONSHOT_", "CUSTOM_"]) {
+      expect(doc, `文档缺少 ${p} 说明`).toContain(p);
+    }
+    expect(doc).toContain("不需要改任何代码");
+  });
+});

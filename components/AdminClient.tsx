@@ -303,7 +303,32 @@ function Editor({ draft, setDraft, isNew, onSave, onCancel, onReview }: any) {
         </div>
         <F label="原理图资产（每行一个 URL）"><textarea value={lines(draft.schematic_assets)} onChange={(e) => set("schematic_assets", parseLines(e.target.value))} style={{ minHeight: 36 }} /></F>
         <F label="代码仓库（每行一个 URL）"><textarea value={lines(draft.code_repositories)} onChange={(e) => set("code_repositories", parseLines(e.target.value))} style={{ minHeight: 36 }} /></F>
-        <F label="图片（每行一个 URL）"><textarea value={lines(draft.images)} onChange={(e) => set("images", parseLines(e.target.value))} style={{ minHeight: 36 }} /></F>
+        <F label="图片（每行一个 URL）">
+          <textarea value={lines(draft.images)} onChange={(e) => set("images", parseLines(e.target.value))}
+            placeholder="https://…/module.jpg&#10;支持多张，每行一个" style={{ minHeight: 36 }} />
+        </F>
+        {(draft.images || []).length > 0 && (
+          <div className="module-gallery" style={{ marginTop: -6 }}>
+            {(draft.images || []).map((src: string, i: number) => (
+              <div key={i} style={{ position: "relative" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={src} alt={`图 ${i + 1}`} loading="lazy"
+                  onError={(e) => {
+                    const el = e.currentTarget as HTMLImageElement;
+                    el.style.opacity = "0.25";
+                    el.title = "图片无法加载，请检查链接是否可公开访问";
+                  }} />
+                <button type="button" className="btn ghost sm"
+                  style={{ position: "absolute", top: 4, right: 4, padding: "1px 6px", fontSize: 11 }}
+                  onClick={() => set("images", draft.images.filter((_: string, j: number) => j !== i))}>删</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="hint" style={{ marginTop: -4 }}>
+          图片需为可公开访问的直链（右键「复制图片地址」得到的 URL）。淘宝等站点的图片可能有防盗链，
+          若预览显示为半透明说明无法加载，建议上传到图床或对象存储后再填。
+        </p>
       </section>
 
       {onReview && (

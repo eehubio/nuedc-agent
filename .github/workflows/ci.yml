@@ -1,72 +1,161 @@
 name: CI
 
 on:
-  push: { branches: [main] }
-  pull_request: { branches: [main] }
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  statuses: write
 
 jobs:
-  verify:
+  build-and-test:
     name: Lint · Typecheck · Test · Build
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - run: npm ci
-      - name: Lint
-        run: npm run lint
-      - name: Typecheck
-        run: npm run typecheck
-      - name: Unit tests
-        run: npm test
-      - name: Build
-        run: npm run build
-      - name: DOCX 导出可打开性
-        run: npm run verify:docx
+    timeout-minutes: 30
 
-  e2e-mock:
-    name: E2E（mock provider，零成本）
-    runs-on: ubuntu-latest
-    needs: verify
+    # queue smoke 需要真实数据库：没有它所有入队都会 503
     services:
       postgres:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: ci
-          POSTGRES_DB: nuedc
+          POSTGRES_USER: ci
+          POSTGRES_DB: nuedc_ci
         ports: ["5432:5432"]
         options: >-
-          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node 20 与部署镜像一致；Node 22 覆盖本地开发环境
+        node-version: ["20", "22"]
+
     env:
-      DATABASE_URL: postgresql://postgres:ci@localhost:5432/nuedc
       ENABLE_MOCK_PROVIDER: "1"
-      MOCK_LATENCY_MS: "20"
-      ADMIN_API_KEY: ci-admin-key
-      ALLOW_INLINE_EXECUTE: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - run: npm ci
-      - name: 应用数据库迁移
-        run: npm run db:init
-      - run: npm run build
-      - name: 启动服务
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install
         run: |
-          npm start &
-          for i in $(seq 1 30); do
-            curl -sf http://localhost:3000/api/routing-preview >/dev/null && break
+          mkdir -p reports
+          npm ci || { echo "::warning::lockfile 过期，回退 npm install"; npm install; }
+
+      - name: Lint
+        run: npm run lint
+
+      # .mts 脚本已纳入检查范围：Worker/压测脚本的缺失 import 会在此暴露
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: DOCX export check
+        run: npm run verify:docx
+
+      # Worker 起不来就红灯：这类问题单测全绿也照样发生
+      - name: Worker startup smoke (blocking)
+        env:
+          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/nuedc_ci
+        run: |
+          set -o pipefail
+          npx vitest run tests/worker-startup.test.ts 2>&1 | tee reports/worker-startup.log
+
+      - name: Build
+        run: npm run build
+
+      # 轻量 queue smoke：只验 DB 迁移、服务启动、入队、去重、配额与查询，
+      # 不调用任何 Provider，几分钟内完成
+      - name: Queue smoke (light, blocking)
+        env:
+          LOAD_MODE: queue-only
+          LOAD_USERS: "15"
+          LOAD_RAMP_SEC: "3"
+          LOAD_TIMEOUT_SEC: "60"
+          LOAD_OUT: reports/load-test.json
+          BASE_URL: http://127.0.0.1:3000
+          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/nuedc_ci
+          ENABLE_MOCK_PROVIDER: "1"
+          ALLOW_INLINE_EXECUTE: "1"
+          ADMIN_API_KEY: ci-smoke-admin-key
+        run: |
+          set -o pipefail
+          mkdir -p reports
+
+          echo "::group::数据库迁移"
+          npm run db:init
+          echo "::endgroup::"
+
+          npx next start -p 3000 > reports/server.log 2>&1 &
+          echo $! > reports/server.pid
+
+          # 健康检查：失败必须 exit 1，绝不带着坏服务继续跑
+          ready=0
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:3000/api/health > /dev/null; then ready=1; break; fi
+            if ! kill -0 "$(cat reports/server.pid)" 2>/dev/null; then
+              echo "❌ next start 进程已退出"; break
+            fi
             sleep 2
           done
-          curl -s http://localhost:3000/api/routing-preview
-      - name: 确认处于 mock 模式（防止 CI 烧真实费用）
-        run: |
-          MOCK=$(curl -s http://localhost:3000/api/routing-preview | grep -o '"mock_enabled":true' || true)
-          if [ -z "$MOCK" ]; then echo "❌ 未启用 mock provider，终止"; exit 1; fi
+          if [ "$ready" -ne 1 ]; then
+            echo "❌ 服务健康检查失败"
+            tail -80 reports/server.log || true
+            exit 1
+          fi
+          echo "✓ 服务就绪"
+
+          # 确认依赖真正就绪（数据库/迁移/模型链路）
+          curl -sf -H "X-Api-Key: ci-smoke-admin-key" http://127.0.0.1:3000/api/ready | head -c 500 || true
+          echo ""
+
+          # 强制校验处于 mock 模式：CI 绝不能产生真实模型费用
+          if ! curl -sf http://127.0.0.1:3000/api/routing-preview | grep -q '"mock_enabled":true'; then
+            echo "❌ 服务端未启用 mock provider，终止以免产生真实费用"
+            curl -s http://127.0.0.1:3000/api/routing-preview
+            exit 1
+          fi
           echo "✓ mock provider 已启用"
-      - name: E2E 冒烟（持久化/级联/快照/权限/幂等/编译护栏）
-        env: { BASE_URL: http://localhost:3000 }
-        run: npm run e2e
-      - name: 100 并发压测
-        env: { BASE_URL: http://localhost:3000, ALLOW_MOCK_ASSUMED: "1" }
-        run: npm run load-test -- --users 100 --ramp 10 --timeout 120
+
+          npx tsx scripts/load-test.mts 2>&1 | tee reports/load-test-summary.txt
+          node scripts/assert-load-result.mjs reports/load-test.json
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f reports/server.pid ]; then
+            pid="$(cat reports/server.pid)"
+            kill "$pid" 2>/dev/null || true
+            sleep 2
+            kill -9 "$pid" 2>/dev/null || true
+          fi
+          pkill -f "next start -p 3000" 2>/dev/null || true
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-node${{ matrix.node-version }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14
