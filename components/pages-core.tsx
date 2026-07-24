@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { PREP_TASKS, KNOWLEDGE_POINTS, TYPICAL_DIRECTIONS, FEATURES, COMPETITION_DATE, COMPETITION_NAME } from "../data/prep-content";
+import { TYPICAL_DIRECTIONS, FEATURES, COMPETITION_DATE, COMPETITION_NAME } from "../data/prep-content";
 import { CATEGORY_TREE, CAT_ICON, categoryLabel } from "../data/categories";
 import { STAGES, STAGE_LABEL } from "./Platform";
 
@@ -17,9 +17,7 @@ function modIcon(cat: string) { return CAT_ICON[String(cat).split(".")[0]] || "�
 
 /* ================= 首页 ================= */
 export function HomePage({ ctx }: { ctx: any }) {
-  const [done, setDone] = useState<boolean[]>(PREP_TASKS.map(() => false));
   const [detail, setDetail] = useState<any>(null);
-  const doneN = done.filter(Boolean).length;
   const hot = useMemo(
     () => [...ctx.modules].sort((a, b) => (b.downloads || 0) - (a.downloads || 0) || (b.price || 0) - (a.price || 0)).slice(0, 5),
     [ctx.modules]
@@ -50,61 +48,36 @@ export function HomePage({ ctx }: { ctx: any }) {
       <Dashboard ctx={ctx} />
       <AccountCard />
 
-      <div className="grid" style={{ gridTemplateColumns: "1fr 300px", alignItems: "start" }}>
-        <div style={{ display: "grid", gap: 14 }}>
-          <div className="card">
-            <h3>热门模块推荐 <span className="more" onClick={() => ctx.setPage("modules")}>更多模块 →</span></h3>
-            <div className="grid cols-5">
-              {hot.map((m) => (
-                <button key={m.id} className="mod-card as-button" onClick={() => setDetail(m)}
-                  title={`查看 ${m.name} 详情`}>
-                  <div className="thumb">{modIcon(m.category)}</div>
-                  <div>
-                    <CertBadge s={m.certification_status} />
-                    {(m.tags || []).slice(0, 1).map((t: string) => <span key={t} className="chip">{t}</span>)}
-                  </div>
-                  <b>{m.name}</b>
-                  <span className="hint">{m.main_chip}</span>
-                </button>
-              ))}
-              {!hot.length && <span className="hint">模块库为空 —— 运行 npm run db:seed 导入种子模块。</span>}
-            </div>
-          </div>
-
-          <div className="card">
-            <h3>典型应用方向 <span className="hint" style={{ fontWeight: 400 }}>点击即用该方向示例开始方案设计</span></h3>
-            <div className="grid cols-5">
-              {TYPICAL_DIRECTIONS.map((d) => (
-                <button key={d.name} className="fcard" onClick={() => ctx.startFromDirection(d.seed)}>
-                  <span className="fi" style={{ background: "#eef3fd", color: "#1d4ed8", fontSize: 22 }}>{d.icon}</span>
-                  <b>{d.name}</b>
-                  <small>{d.tags.join(" / ")}</small>
-                </button>
-              ))}
-            </div>
+      <div style={{ display: "grid", gap: 14 }}>
+        <div className="card">
+          <h3>热门模块推荐 <span className="more" onClick={() => ctx.setPage("modules")}>更多模块 →</span></h3>
+          <div className="grid cols-5">
+            {hot.map((m) => (
+              <button key={m.id} className="mod-card as-button" onClick={() => setDetail(m)}
+                title={`查看 ${m.name} 详情`}>
+                <div className="thumb">{modIcon(m.category)}</div>
+                <div>
+                  <CertBadge s={m.certification_status} />
+                  {(m.tags || []).slice(0, 1).map((t: string) => <span key={t} className="chip">{t}</span>)}
+                </div>
+                <b>{m.name}</b>
+                <span className="hint">{m.main_chip}</span>
+              </button>
+            ))}
+            {!hot.length && <span className="hint">模块库为空 —— 运行 npm run db:seed 导入种子模块。</span>}
           </div>
         </div>
 
-        <div style={{ display: "grid", gap: 14 }}>
-          <div className="card">
-            <h3>今日备赛任务 <span className="hint" style={{ fontWeight: 400 }}>{doneN}/{PREP_TASKS.length}</span></h3>
-            <div className="progress"><i style={{ width: `${(doneN / PREP_TASKS.length) * 100}%` }} /></div>
-            <div className="tasklist">
-              {PREP_TASKS.map((t, i) => (
-                <label key={t} className={done[i] ? "done" : ""}>
-                  <input type="checkbox" checked={done[i]} onChange={() => setDone((d) => d.map((v, j) => (j === i ? !v : v)))} />
-                  {t}
-                </label>
-              ))}
-            </div>
-          </div>
-          <div className="card">
-            <h3>热门知识点</h3>
-            <div className="klist">
-              {KNOWLEDGE_POINTS.map((k) => (
-                <div key={k.t} className="krow">{k.t}<span className="heat">{k.heat}</span></div>
-              ))}
-            </div>
+        <div className="card">
+          <h3>典型应用方向 <span className="hint" style={{ fontWeight: 400 }}>点击即用该方向示例开始方案设计</span></h3>
+          <div className="grid cols-5">
+            {TYPICAL_DIRECTIONS.map((d) => (
+              <button key={d.name} className="fcard" onClick={() => ctx.startFromDirection(d.seed)}>
+                <span className="fi" style={{ background: "#eef3fd", color: "#1d4ed8", fontSize: 22 }}>{d.icon}</span>
+                <b>{d.name}</b>
+                <small>{d.tags.join(" / ")}</small>
+              </button>
+            ))}
           </div>
         </div>
       </div>
