@@ -113,12 +113,23 @@ describe("四、重型压测两 Job 隔离", () => {
     expect(lt).toMatch(/collect-db-stats\.mjs --mode=mock-provider/);
   });
 
-  it("Worker 启动用轮询而非固定 sleep", () => {
+  it("Worker 就绪以 readiness 的 workers.live 为准，日志仅辅助", () => {
     const j = lt.slice(lt.indexOf("  mock-provider:"));
     const step = j.slice(j.indexOf("- name: Start worker"), j.indexOf("- name: Preflight"));
     expect(step).not.toMatch(/^\s+sleep 8$/m);
-    expect(step).toMatch(/for i in \$\(seq 1 30\)/);
+    // 必须查 readiness 的 workers.live，而不是只 grep 日志横幅
+    expect(step).toMatch(/workers\?\.live/);
+    expect(step).toMatch(/api\/admin\/readiness/);
     expect(step).toMatch(/exit 1/);
+  });
+
+  it("nightly 默认规模较小，手工触发仍可上调", () => {
+    // schedule 无 inputs 时的回退值
+    expect(lt).toMatch(/inputs\.queue_users \|\| '50'/);
+    expect(lt).toMatch(/inputs\.mock_users \|\| '100'/);
+    // workflow_dispatch 预填值保留较大规模
+    expect(lt).toMatch(/default: "100"/);
+    expect(lt).toMatch(/default: "300"/);
   });
 });
 
@@ -137,12 +148,19 @@ describe("六、Vercel 侧显式声明 DB_DRIVER", () => {
 
 describe("五、readiness 前置检查脚本", () => {
   const src = readFileSync("scripts/assert-readiness.mjs", "utf8");
+  it("通过服务端 profile 表达差异，而非自行忽略 API 结论", () => {
+    expect(src).toMatch(/profile=/);
+    expect(src).toMatch(/PROFILE = MODE === "queue-only" \? "queue-only" : "full"/);
+    // 不得再出现"API 说 not ready 但脚本放行"的写法
+    expect(src).toMatch(/不再"忽略 API 的 ready"/);
+  });
+
   it("支持三种模式且 queue-only 不要求 Worker", () => {
     expect(src).toMatch(/queue-only/);
     expect(src).toMatch(/mock-provider/);
     expect(src).toMatch(/report-only/);
-    // 只有 mock-provider 检查 Live Worker
-    const workerCheck = src.slice(src.indexOf('MODE === "mock-provider"'));
+    // full profile 下才校验 Live Worker 数值
+    const workerCheck = src.slice(src.indexOf('PROFILE === "full"'));
     expect(workerCheck.slice(0, 300)).toMatch(/workers\?\.live/);
   });
   it("断言 HTTP 200 / ready / DB 可达", () => {
@@ -153,5 +171,34 @@ describe("五、readiness 前置检查脚本", () => {
   it("不静默吞错：失败写入详情并非零退出", () => {
     expect(src).toMatch(/readiness 请求失败/);
     expect(src).toMatch(/process\.exit\(reportOnly \? 0 : 1\)/);
+  });
+});
+
+describe("七、readiness profile", () => {
+  const src = readFileSync("app/api/admin/readiness/route.ts", "utf8");
+
+  it("支持 full 与 queue-only 两种 profile", () => {
+    expect(src).toMatch(/profile/);
+    expect(src).toMatch(/queue-only/);
+    expect(src).toMatch(/requiresWorker/);
+  });
+
+  it("非法 profile 返回 400", () => {
+    expect(src).toMatch(/profile 取值非法/);
+    expect(src).toMatch(/status: 400/);
+  });
+
+  it("queue-only 下 Worker/Provider/Queue 降级为 warning", () => {
+    // 这三类都必须按 requiresWorker 分流，而不是无条件 errors.push
+    for (const kw of ["没有存活的 Worker", "所有 Provider 均不可用", "队列积压"]) {
+      const at = src.indexOf(kw);
+      expect(at, `未找到：${kw}`).toBeGreaterThan(-1);
+      const around = src.slice(Math.max(0, at - 200), at + 100);
+      expect(around, `${kw} 应按 profile 分流`).toMatch(/requiresWorker \? errors : warnings/);
+    }
+  });
+
+  it("响应回显 profile", () => {
+    expect(src).toMatch(/^\s+profile,$/m);
   });
 });

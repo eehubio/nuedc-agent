@@ -1,8 +1,9 @@
 /** 压测前置 readiness 检查（管理员接口）。
  *
- *  不同压测模式对"就绪"的要求不同：
- *    queue-only    只入队，不需要 Worker —— 只要求 Web + DB 正常
- *    mock-provider 端到端执行 —— 必须至少有一个 Live Worker，否则任务永远排队
+ *  不同压测模式对"就绪"的要求不同，这个差异交给服务端的 profile 参数表达，
+ *  而不是"API 说 ready=false，脚本再自行忽略" —— 那样两边语义会打架：
+ *    queue-only    → ?profile=queue-only，服务端只要求 Web + DB
+ *    mock-provider → ?profile=full，服务端要求 Web + DB + Worker + Provider + Queue
  *    report-only   仅抓取快照，不做断言（压测后使用），但网络/HTTP 错误仍要报告
  *
  *  用法：
@@ -25,7 +26,10 @@ const args = Object.fromEntries(
 );
 
 const MODE = args.mode || "queue-only";
-const URL_ = args.url || "http://127.0.0.1:3000/api/admin/readiness";
+const BASE_URL_ = args.url || "http://127.0.0.1:3000/api/admin/readiness";
+/** 模式 → 服务端 profile。report-only 用 full 抓完整快照但不断言。 */
+const PROFILE = MODE === "queue-only" ? "queue-only" : "full";
+const URL_ = BASE_URL_ + (BASE_URL_.includes("?") ? "&" : "?") + "profile=" + PROFILE;
 const OUT = args.out || "";
 const ADMIN = process.env.ADMIN_API_KEY || "";
 
@@ -84,12 +88,14 @@ if (res.status !== 200) {
 if (body?.database?.ok !== true) {
   failures.push(`数据库不可达：${JSON.stringify(body?.database || null)}`);
 }
+// 直接采信服务端在该 profile 下的结论 —— 不再"忽略 API 的 ready"
 if (body?.ready !== true) {
-  failures.push(`ready=false，errors=${JSON.stringify(body?.errors || [])}`);
+  failures.push(`ready=false（profile=${body?.profile ?? PROFILE}），errors=${JSON.stringify(body?.errors || [])}`);
 }
 
-// mock-provider 必须有 Live Worker
-if (MODE === "mock-provider") {
+// full profile 下服务端已把"无 Live Worker"计为 error，这里再确认一次数值，
+// 便于失败时直接看到具体数字
+if (PROFILE === "full") {
   const live = Number(body?.workers?.live || 0);
   if (live < 1) {
     failures.push(`没有存活的 Worker（live=${live}）—— mock-provider 的任务不会被执行`);
@@ -97,7 +103,7 @@ if (MODE === "mock-provider") {
 }
 
 console.log("\n=== readiness 前置检查 ===");
-console.log(`模式        : ${MODE}`);
+console.log(`模式        : ${MODE}（profile=${PROFILE}）`);
 console.log(`HTTP        : ${res.status}`);
 console.log(`ready       : ${body?.ready}`);
 console.log(`db_driver   : ${body?.db_driver ?? "-"}`);
