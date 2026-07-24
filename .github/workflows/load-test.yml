@@ -122,22 +122,7 @@ jobs:
 
       - name: Collect DB stats
         if: always()
-        run: |
-          {
-            echo "=== 队列深度（按优先级）==="
-            PGPASSWORD=ci psql -h 127.0.0.1 -U ci -d nuedc_queue -c \
-              "SELECT priority, status, COUNT(*) FROM agent_tasks GROUP BY 1,2 ORDER BY 1;"
-            echo "=== 最老排队任务（秒）==="
-            PGPASSWORD=ci psql -h 127.0.0.1 -U ci -d nuedc_queue -c \
-              "SELECT COALESCE(MAX(EXTRACT(EPOCH FROM (now()-created_at))),0) FROM agent_tasks WHERE status='queued';"
-            echo "=== 唯一任务数 ==="
-            PGPASSWORD=ci psql -h 127.0.0.1 -U ci -d nuedc_queue -c \
-              "SELECT COUNT(DISTINCT task_id) AS unique_tasks, COUNT(*) AS rows FROM agent_tasks;"
-            echo "=== 配额计数 ==="
-            PGPASSWORD=ci psql -h 127.0.0.1 -U ci -d nuedc_queue -c \
-              "SELECT owner, kind, used FROM quota_counters ORDER BY used DESC LIMIT 20;"
-          } > reports/db-stats.txt 2>&1
-          cat reports/db-stats.txt
+        run: node scripts/collect-db-stats.mjs --mode=queue-only --out=reports/db-stats.txt
 
       - name: Stop server
         if: always()
@@ -225,8 +210,22 @@ jobs:
           ENABLE_MOCK_PROVIDER=1 WORKER_ID=ci-worker-1 \
             npx tsx scripts/agent-worker.mts > reports/worker.log 2>&1 &
           echo $! > reports/worker.pid
-          sleep 8
-          tail -10 reports/worker.log || true
+          # 轮询等待 Worker 真正写入心跳，而不是固定 sleep —— 固定值在慢 Runner 上
+          # 会让后面的 readiness 前置检查因"无 Live Worker"误判失败
+          up=0
+          for i in $(seq 1 30); do
+            if grep -q "启动：重型槽位" reports/worker.log 2>/dev/null; then up=1; break; fi
+            if ! kill -0 "$(cat reports/worker.pid)" 2>/dev/null; then
+              echo "Worker 进程已退出"; break
+            fi
+            sleep 2
+          done
+          tail -20 reports/worker.log || true
+          if [ "$up" -ne 1 ]; then
+            echo "Worker 在 60s 内未就绪"
+            exit 1
+          fi
+          echo "Worker 已就绪"
 
       # mock-provider 必须有 Live Worker，否则任务永远排队
       - name: Preflight readiness (require live worker)
@@ -258,22 +257,7 @@ jobs:
 
       - name: Collect DB stats
         if: always()
-        run: |
-          {
-            echo "=== 任务状态分布 ==="
-            PGPASSWORD=ci psql -h 127.0.0.1 -U ci -d nuedc_mock -c \
-              "SELECT status, COUNT(*) FROM agent_tasks GROUP BY status ORDER BY 2 DESC;"
-            echo "=== lease reclaim（重试过的任务）==="
-            PGPASSWORD=ci psql -h 127.0.0.1 -U ci -d nuedc_mock -c \
-              "SELECT COUNT(*) AS reclaimed FROM agent_tasks WHERE attempts > 1;"
-            echo "=== duplicate artifacts ==="
-            PGPASSWORD=ci psql -h 127.0.0.1 -U ci -d nuedc_mock -c \
-              "SELECT project_id, type, version, COUNT(*) FROM artifacts GROUP BY 1,2,3 HAVING COUNT(*)>1;"
-            echo "=== Worker 心跳 ==="
-            PGPASSWORD=ci psql -h 127.0.0.1 -U ci -d nuedc_mock -c \
-              "SELECT worker_id, heavy_slots, light_slots, in_flight FROM worker_heartbeats;"
-          } > reports/db-stats.txt 2>&1
-          cat reports/db-stats.txt
+        run: node scripts/collect-db-stats.mjs --mode=mock-provider --out=reports/db-stats.txt
 
       - name: Stop worker and server
         if: always()

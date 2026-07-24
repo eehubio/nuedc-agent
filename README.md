@@ -63,7 +63,11 @@ npm run dev                    # http://localhost:3000
 ### 1）Web（Vercel）
 
 1. 在 [Neon](https://neon.tech) 创建数据库，复制连接串（`postgresql://...`）。
-2. `vercel` 部署（或连 GitHub 仓库），在 Vercel 环境变量里配置 `.env.example` 中的项（至少 `DATABASE_URL`、`LLM_PROVIDER`、对应的 LLM Key）。
+2. `vercel` 部署（或连 GitHub 仓库），在 Vercel 环境变量里配置 `.env.example` 中的项（至少 `DATABASE_URL`、`DB_DRIVER=neon_http`、`LLM_PROVIDER`、对应的 LLM Key）。
+
+   > `DB_DRIVER` 不配也能跑（会按 `DATABASE_URL` 自动判断），但**建议显式设为 `neon_http`**：
+   > 自动判断依赖主机名匹配 `*.neon.tech`，若将来换成自定义域名或代理端点会误判成
+   > `postgres_pool`，进而尝试 TCP 连接而失败。三种取值见 `.env.example`。
 3. 首次部署后本地跑一次初始化（指向线上库）：
    ```bash
    DATABASE_URL=postgresql://... npm run db:init
@@ -92,7 +96,7 @@ docker run -d --name nuedc-worker --restart unless-stopped \
   nuedc-worker:latest
 ```
 
-Worker 环境变量：`WORKER_ID`（默认 `hostname:pid`）、`WORKER_HEAVY_SLOTS`（默认 2）、
+Worker 环境变量：`DB_DRIVER`（与 Web 保持一致，Neon 用 `neon_http`）、`WORKER_ID`（默认 `hostname:pid`）、`WORKER_HEAVY_SLOTS`（默认 2）、
 `WORKER_LIGHT_SLOTS`（默认 6）、`WORKER_POLL_MS`（默认 1500）。
 可以横向扩多个 Worker：认领用 `FOR UPDATE SKIP LOCKED`，不会重复消费。
 

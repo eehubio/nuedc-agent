@@ -106,6 +106,33 @@ describe("四、重型压测两 Job 隔离", () => {
     expect(lt).toMatch(/name: heavy-queue-only/);
     expect(lt).toMatch(/name: heavy-mock-provider/);
   });
+
+  it("DB stats 不依赖 psql（Runner 未必预装 postgresql-client）", () => {
+    expect(lt).not.toMatch(/psql/);
+    expect(lt).toMatch(/collect-db-stats\.mjs --mode=queue-only/);
+    expect(lt).toMatch(/collect-db-stats\.mjs --mode=mock-provider/);
+  });
+
+  it("Worker 启动用轮询而非固定 sleep", () => {
+    const j = lt.slice(lt.indexOf("  mock-provider:"));
+    const step = j.slice(j.indexOf("- name: Start worker"), j.indexOf("- name: Preflight"));
+    expect(step).not.toMatch(/^\s+sleep 8$/m);
+    expect(step).toMatch(/for i in \$\(seq 1 30\)/);
+    expect(step).toMatch(/exit 1/);
+  });
+});
+
+describe("六、Vercel 侧显式声明 DB_DRIVER", () => {
+  it(".env.example 与 README 均说明 neon_http", () => {
+    const env = readFileSync(".env.example", "utf8");
+    const readme = readFileSync("README.md", "utf8");
+    expect(env).toMatch(/DB_DRIVER=neon_http/);
+    expect(env).toMatch(/postgres_pool/);
+    expect(env).toMatch(/pglite/);
+    // .env.example 不应再残留已废弃的 Turso 配置
+    expect(env).not.toMatch(/TURSO_/);
+    expect(readme).toMatch(/DB_DRIVER=neon_http/);
+  });
 });
 
 describe("五、readiness 前置检查脚本", () => {
