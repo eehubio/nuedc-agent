@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CertBadge } from "./pages-core";
 import { CATEGORY_TREE, FLAT_CATEGORIES, categoryLabel, PROTOCOL_ENUM, SOURCE_TYPES } from "../data/categories";
+import { resizeModuleImage, MODULE_IMAGE } from "../lib/module-image";
 
 type Toast = { kind: "ok" | "err"; msg: string } | null;
 const EMPTY: any = {
@@ -141,7 +142,7 @@ export default function AdminClient() {
 
           <div className="cms-editor">
             {draft ? <Editor draft={draft} setDraft={setDraft} isNew={isNew} onSave={save} onCancel={() => setDraft(null)}
-              onReview={!isNew ? review : undefined} />
+              onReview={!isNew ? review : undefined} flash={flash} />
               : <div className="cms-empty">← 从左侧选择模块编辑<br />或点「新建模块」</div>}
           </div>
         </div>
@@ -153,7 +154,7 @@ export default function AdminClient() {
 }
 
 /* ============ 分区表单编辑器 ============ */
-function Editor({ draft, setDraft, isNew, onSave, onCancel, onReview }: any) {
+function Editor({ draft, setDraft, isNew, onSave, onCancel, onReview, flash }: any) {
   const set = (k: string, v: any) => setDraft({ ...draft, [k]: v });
   const setNested = (obj: string, k: string, v: any) => setDraft({ ...draft, [obj]: { ...(draft[obj] || {}), [k]: v } });
   const lines = (arr?: string[]) => (arr || []).join("\n");
@@ -203,6 +204,7 @@ function Editor({ draft, setDraft, isNew, onSave, onCancel, onReview }: any) {
         </div>
         <F label="描述"><textarea value={draft.description || ""} onChange={(e) => set("description", e.target.value)} style={{ minHeight: 56 }} /></F>
         <F label="工作原理（可选）"><textarea value={draft.principle || ""} onChange={(e) => set("principle", e.target.value)} style={{ minHeight: 44 }} /></F>
+        <ModuleImageField moduleId={draft.id} isNew={isNew} hasImage={draft.has_image} flash={flash} />
       </section>
 
       <section>
@@ -424,5 +426,110 @@ function RevisionSection({ moduleId }: { moduleId: string }) {
         <button className="btn sm" onClick={add}>记录</button>
       </div>
     </section>
+  );
+}
+
+/** 模块图片上传。
+ *
+ *  在浏览器里缩放到统一规格后再上传（见 lib/module-image.ts），
+ *  服务端只做兜底校验。这样既避免引入 sharp 原生依赖，
+ *  也让网络只传几十 KB 而非原始的几 MB。 */
+function ModuleImageField({
+  moduleId, isNew, hasImage, flash,
+}: {
+  moduleId: string;
+  isNew: boolean;
+  hasImage?: boolean;
+  flash: (kind: "ok" | "err", msg: string) => void;
+}) {
+  const [preview, setPreview] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [hasRemote, setHasRemote] = useState(false);
+  const [bust, setBust] = useState(0);
+
+  // 切换模块时重置本地预览。是否已有图直接用列表返回的 has_image，
+  // 不额外发探测请求（该端点不支持 HEAD，探测会得到 405）
+  useEffect(() => {
+    setPreview(null);
+    setHasRemote(!!hasImage);
+    setBust(0);
+  }, [moduleId, hasImage]);
+
+  async function onPick(file?: File | null) {
+    if (!file) return;
+    if (isNew) {
+      flash("err", "请先保存模块，再上传图片");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await resizeModuleImage(file);
+      setPreview(r.dataUrl);
+      const res = await fetch(`/api/modules/${encodeURIComponent(moduleId)}/image`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: r.dataUrl }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || `上传失败（${res.status}）`);
+      setHasRemote(true);
+      setBust(Date.now());
+      flash("ok", `图片已保存（${r.width}×${r.height}，${Math.round(r.bytes / 1024)}KB）`);
+    } catch (e: any) {
+      setPreview(null);
+      flash("err", String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRemove() {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/modules/${encodeURIComponent(moduleId)}/image`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`删除失败（${res.status}）`);
+      setPreview(null);
+      setHasRemote(false);
+      setBust(Date.now());
+      flash("ok", "图片已移除，列表将回退为分类图标");
+    } catch (e: any) {
+      flash("err", String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const src = preview
+    ?? (hasRemote ? `/api/modules/${encodeURIComponent(moduleId)}/image?v=${bust}` : null);
+
+  return (
+    <F label={`模块图片（自动缩放到最长边 ${MODULE_IMAGE.MAX_EDGE}px）`}>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+        <div style={{
+          width: 96, height: 96, flexShrink: 0, borderRadius: 8,
+          border: "1px dashed var(--line)", background: "#fafbfe",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          overflow: "hidden", fontSize: 26, color: "var(--muted)",
+        }}>
+          {src
+            // eslint-disable-next-line @next/next/no-img-element
+            ? <img src={src} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+            : "🖼"}
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <input type="file" accept={MODULE_IMAGE.ACCEPT} disabled={busy || isNew}
+            onChange={(e) => { onPick(e.target.files?.[0]); e.target.value = ""; }} />
+          <p className="hint" style={{ margin: "6px 0 0" }}>
+            {isNew
+              ? "新建模块请先点「保存」，之后再上传图片。"
+              : "支持 PNG / JPEG / WEBP / GIF；上传后自动等比缩放并压缩，无需手工处理。"}
+          </p>
+          {(hasRemote || preview) && !isNew && (
+            <button className="btn ghost sm danger" disabled={busy}
+              style={{ marginTop: 8 }} onClick={onRemove}>移除图片</button>
+          )}
+        </div>
+      </div>
+    </F>
   );
 }

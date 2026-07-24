@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { TYPICAL_DIRECTIONS, FEATURES, COMPETITION_DATE, COMPETITION_NAME } from "../data/prep-content";
+import { ModuleThumb } from "./ModuleThumb";
 import { CATEGORY_TREE, CAT_ICON, categoryLabel } from "../data/categories";
 import { STAGES, STAGE_LABEL } from "./Platform";
 
@@ -55,7 +56,7 @@ export function HomePage({ ctx }: { ctx: any }) {
             {hot.map((m) => (
               <button key={m.id} className="mod-card as-button" onClick={() => setDetail(m)}
                 title={`查看 ${m.name} 详情`}>
-                <div className="thumb">{modIcon(m.category)}</div>
+                <ModuleThumb id={m.id} hasImage={m.has_image} icon={modIcon(m.category)} />
                 <div>
                   <CertBadge s={m.certification_status} />
                   {(m.tags || []).slice(0, 1).map((t: string) => <span key={t} className="chip">{t}</span>)}
@@ -130,7 +131,8 @@ export function ModulesPage({ ctx }: { ctx: any }) {
           return (
             <div key={m.id} className="card mod-card">
               <div style={{ display: "flex", gap: 12 }}>
-                <div className="thumb" style={{ width: 84, flexShrink: 0 }}>{modIcon(m.category)}</div>
+                <ModuleThumb id={m.id} hasImage={m.has_image} icon={modIcon(m.category)}
+                  size={84} style={{ flexShrink: 0 }} />
                 <div style={{ minWidth: 0 }}>
                   <b>{m.name}</b>
                   <div className="hint">{m.main_chip} · {m.description?.slice(0, 34)}…</div>
@@ -172,6 +174,13 @@ export function ModuleDetailModal({ detail, onClose, onPick, picked }: { detail:
         <h3 style={{ marginTop: 0 }}>{detail.name} <CertBadge s={detail.certification_status} />
           {detail._completeness != null && <span className="chip">数据完整度 {detail._completeness}%</span>}</h3>
         <p className="hint">{categoryLabel(detail.category)} · {detail.main_chip}</p>
+        {detail.has_image && (
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img src={`/api/modules/${encodeURIComponent(detail.id)}/image`} alt={detail.name}
+            style={{ width: "100%", maxWidth: 320, borderRadius: 10, border: "1px solid var(--line)",
+                     display: "block", margin: "0 0 12px" }}
+            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+        )}
         <p>{detail.description}</p>
         <h4>接口定义</h4>
         <table className="data"><thead><tr><th>接口</th><th>类型</th><th>电平</th><th>约束</th></tr></thead>
