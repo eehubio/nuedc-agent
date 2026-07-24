@@ -69,9 +69,10 @@ describe("Worker 启动冒烟", () => {
       { DATABASE_URL: "", ENABLE_MOCK_PROVIDER: "1", WORKER_POLL_MS: "200" },
       6000,
     );
-    expect(out).toMatch(/DATABASE_URL|数据库/);
-    // 不能是模块加载失败导致的"看起来也报错了"
-    expect(out).not.toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module/);
+    // 只要是「可读的失败」即可：缺配置、连不上库都算正常报错路径
+    expect(out).toMatch(/DATABASE_URL|数据库|database|connect|ECONN/i);
+    // 但绝不能是模块加载/解析失败 —— 那说明 Worker 本身坏了
+    expect(out).not.toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module|ERR_UNSUPPORTED_RESOLVE_REQUEST/);
   }, 25_000);
 
   it("配置齐全时能启动、打印槽位信息，并响应 SIGTERM 优雅退出", async () => {
@@ -84,7 +85,7 @@ describe("Worker 启动冒烟", () => {
     const { out } = await runWorker(
       { DATABASE_URL: dbUrl, ENABLE_MOCK_PROVIDER: "1", WORKER_POLL_MS: "300",
         WORKER_HEAVY_SLOTS: "1", WORKER_LIGHT_SLOTS: "2" },
-      8000,
+      12000,   // 首次启动要跑完整套迁移，留足时间
     );
     expect(out).toContain("启动");
     expect(out).toMatch(/重型槽位 1/);

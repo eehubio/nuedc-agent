@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db, ensureSchema } from "@/lib/db";
+import { db, ensureSchema, dbDriver } from "@/lib/db";
 import { resolveTier } from "@/lib/auth";
 import { configuredProviders } from "@/lib/model-gateway";
 import { getSystemMode } from "@/lib/system-mode";
@@ -50,6 +50,7 @@ export async function GET(req: NextRequest) {
       mode: await getSystemMode(),
       providers,
       mock_enabled: process.env.ENABLE_MOCK_PROVIDER === "1",
+      db_driver: dbDriver(),
       db_host: (() => {
         try { return new URL(process.env.DATABASE_URL || "").host || null; } catch { return null; }
       })(),

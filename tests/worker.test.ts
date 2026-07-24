@@ -97,3 +97,24 @@ describe("Worker 部署形态", () => {
     expect(src).toContain('st.status === "dead"');      // 死信状态有明确提示
   });
 });
+
+describe("数据库驱动选择（CI 与自建部署）", () => {
+  it("Neon 域名走 HTTP 驱动，其余走标准连接池", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("lib/db.ts", "utf8");
+    expect(src).toContain("postgres_pool");
+    expect(src).toContain("neon.tech");       // 按主机名自动判断
+    expect(src).toContain("DB_DRIVER");       // 支持显式覆盖
+  });
+
+  it("提供连接池关闭方法，Worker 退出时释放", async () => {
+    const fs = await import("node:fs");
+    expect(fs.readFileSync("lib/db.ts", "utf8")).toContain("export async function closeDb");
+    expect(fs.readFileSync("scripts/agent-worker.mts", "utf8")).toContain("await closeDb()");
+  });
+
+  it("驱动信息在 /api/ready 中可见，便于确认连的是哪种库", async () => {
+    const fs = await import("node:fs");
+    expect(fs.readFileSync("app/api/ready/route.ts", "utf8")).toContain("db_driver");
+  });
+});

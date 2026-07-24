@@ -1,25 +1,57 @@
 import { neon } from "@neondatabase/serverless";
 
 /**
- * Neon Postgres 数据层。
- * 对外保持与原 libsql 相同的接口：db().execute(sql | { sql, args }) → { rows }
- * 这样上层 21 处调用点无需改动；`?` 占位符在此处自动转换为 Postgres 的 $1..$n。
+ * Postgres 数据层，支持两种驱动：
+ *  - neon（默认）：Neon Serverless HTTP 驱动，用于 Vercel 等无常驻连接的环境
+ *  - postgres_pool：标准 node-postgres 连接池，用于自建服务器、Docker、CI 的普通 Postgres
+ *
+ * 驱动选择顺序：DB_DRIVER 显式指定 > 按连接串主机名自动判断（*.neon.tech → neon）。
+ * 对外统一接口：db().execute(sql | { sql, args }) → { rows }
+ * `?` 占位符在此处自动转换为 Postgres 的 $1..$n，上层调用点无需改动。
  */
 
 type Stmt = string | { sql: string; args?: unknown[] };
+type Driver = "neon" | "postgres_pool";
 
-let _sql: any = null;
+let _client: any = null;
+let _driver: Driver | null = null;
 
-function conn() {
-  if (_sql) return _sql;
+function pickDriver(url: string): Driver {
+  const explicit = process.env.DB_DRIVER;
+  if (explicit === "neon" || explicit === "postgres_pool") return explicit;
+  try {
+    const host = new URL(url).hostname;
+    // Neon 的 HTTP 驱动只认自家域名；其余一律走标准连接池
+    return /\.neon\.tech$/i.test(host) ? "neon" : "postgres_pool";
+  } catch {
+    return "neon";
+  }
+}
+
+function conn(): { driver: Driver; client: any } {
+  if (_client && _driver) return { driver: _driver, client: _client };
   const url = process.env.DATABASE_URL;
   if (!url) {
     throw new Error(
       "缺少 DATABASE_URL。请在 Neon 控制台复制连接串（postgresql://...），本地写入 .env.local，线上配置到 Vercel 环境变量。"
     );
   }
-  _sql = neon(url);
-  return _sql;
+  _driver = pickDriver(url);
+  if (_driver === "neon") {
+    _client = neon(url);
+  } else {
+    // 延迟 require：Vercel 环境不需要 pg，避免打包体积与冷启动开销
+    const { Pool } = require("pg");
+    _client = new Pool({
+      connectionString: url,
+      max: Number(process.env.PG_POOL_MAX || 10),
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 10_000,
+      // 自建/CI 的本地库通常无 TLS；云托管一般要求 TLS
+      ssl: /sslmode=require/.test(url) ? { rejectUnauthorized: false } : undefined,
+    });
+  }
+  return { driver: _driver, client: _client };
 }
 
 function toPgPlaceholders(sql: string): string {
@@ -31,10 +63,25 @@ export function db() {
   return {
     async execute(stmt: Stmt): Promise<{ rows: Record<string, unknown>[] }> {
       const s = typeof stmt === "string" ? { sql: stmt, args: [] as unknown[] } : stmt;
-      const rows = await conn().query(toPgPlaceholders(s.sql), (s.args ?? []) as unknown[]);
+      const { client } = conn();
+      const rows = await client.query(toPgPlaceholders(s.sql), (s.args ?? []) as unknown[]);
       return { rows: (Array.isArray(rows) ? rows : (rows?.rows ?? [])) as Record<string, unknown>[] };
     },
   };
+}
+
+/** 当前使用的驱动（诊断与 /api/ready 用） */
+export function dbDriver(): string {
+  try { return conn().driver; } catch { return "unconfigured"; }
+}
+
+/** 优雅关闭连接池（Worker 退出时调用；Neon HTTP 驱动无需关闭） */
+export async function closeDb(): Promise<void> {
+  if (_driver === "postgres_pool" && _client?.end) {
+    await _client.end().catch(() => {});
+  }
+  _client = null;
+  _driver = null;
 }
 
 import { ensureMigrations } from "./migrations";

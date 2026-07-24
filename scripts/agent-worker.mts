@@ -19,7 +19,7 @@ import { hostname } from "node:os";
 import "../lib/agents/index";
 import { runAgent } from "../lib/agents/base";
 import { claimTask, heartbeat, reclaimExpired, completeTask, failTask, HEARTBEAT_MS, type ClaimedTask } from "../lib/task-queue";
-import { db, ensureSchema } from "../lib/db";
+import { db, ensureSchema, closeDb, dbDriver } from "../lib/db";
 import type { AgentType, ProjectStage } from "../lib/types";
 
 const WORKER_ID = process.env.WORKER_ID || `${hostname()}:${process.pid}`;
@@ -133,7 +133,7 @@ async function consumeLoop(heavy: boolean, slots: number) {
 
 async function main() {
   await ensureSchema();
-  log(`启动：重型槽位 ${HEAVY_SLOTS} · 轻型槽位 ${LIGHT_SLOTS} · 轮询 ${POLL_MS}ms`);
+  log(`启动：重型槽位 ${HEAVY_SLOTS} · 轻型槽位 ${LIGHT_SLOTS} · 轮询 ${POLL_MS}ms · 驱动 ${dbDriver()}`);
 
   const shutdown = async (sig: string) => {
     if (shuttingDown) return;
@@ -147,6 +147,7 @@ async function main() {
             WHERE worker_id=? AND status='running'`,
       args: [WORKER_ID],
     }).catch(() => {});
+    await closeDb();      // 释放连接池，避免进程挂住
     log("已优雅退出");
     process.exit(0);
   };
