@@ -514,6 +514,17 @@ CREATE INDEX IF NOT EXISTS idx_worker_beat ON worker_heartbeats(last_beat_at);
 ALTER TABLE worker_heartbeats ADD COLUMN IF NOT EXISTS deployed_sha TEXT;
 `,
   },
+  {
+    id: 21,
+    name: "module_image",
+    sql: `
+-- 模块图片：base64 data URL，单独成列而非塞进 data JSON，
+-- 便于列表查询时用 SELECT 明确排除（图片体积远大于其他字段，
+-- 列表接口带上会让响应膨胀几十倍）
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS image TEXT;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS image_updated_at TIMESTAMPTZ;
+`,
+  },
 ];
 
 let applied = false;
