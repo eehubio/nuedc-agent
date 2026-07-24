@@ -1,6 +1,5 @@
 node_modules/
 .next/
-.DS_Store
 local.db
 .env.local
 .env

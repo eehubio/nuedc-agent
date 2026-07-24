@@ -1,47 +1,72 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
-permissions:
-  contents: read
-  checks: write
-  statuses: write
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
 
 jobs:
   verify:
     name: Lint · Typecheck · Test · Build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: ["20", "22"]
-    env:
-      NEXT_TELEMETRY_DISABLED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: npm
-      - name: Install
-        run: npm ci || { echo "::warning::lockfile 过期，回退 npm install"; npm install; }
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
       - name: Lint
         run: npm run lint
       - name: Typecheck
         run: npm run typecheck
-      - name: Test
+      - name: Unit tests
         run: npm test
       - name: Build
         run: npm run build
-      - name: DOCX export check
+      - name: DOCX 导出可打开性
         run: npm run verify:docx
+
+  e2e-mock:
+    name: E2E（mock provider，零成本）
+    runs-on: ubuntu-latest
+    needs: verify
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: nuedc
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:ci@localhost:5432/nuedc
+      ENABLE_MOCK_PROVIDER: "1"
+      MOCK_LATENCY_MS: "20"
+      ADMIN_API_KEY: ci-admin-key
+      ALLOW_INLINE_EXECUTE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - name: 应用数据库迁移
+        run: npm run db:init
+      - run: npm run build
+      - name: 启动服务
+        run: |
+          npm start &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000/api/routing-preview >/dev/null && break
+            sleep 2
+          done
+          curl -s http://localhost:3000/api/routing-preview
+      - name: 确认处于 mock 模式（防止 CI 烧真实费用）
+        run: |
+          MOCK=$(curl -s http://localhost:3000/api/routing-preview | grep -o '"mock_enabled":true' || true)
+          if [ -z "$MOCK" ]; then echo "❌ 未启用 mock provider，终止"; exit 1; fi
+          echo "✓ mock provider 已启用"
+      - name: E2E 冒烟（持久化/级联/快照/权限/幂等/编译护栏）
+        env: { BASE_URL: http://localhost:3000 }
+        run: npm run e2e
+      - name: 100 并发压测
+        env: { BASE_URL: http://localhost:3000, ALLOW_MOCK_ASSUMED: "1" }
+        run: npm run load-test -- --users 100 --ramp 10 --timeout 120

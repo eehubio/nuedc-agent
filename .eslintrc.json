@@ -1,7 +1,7 @@
 {
   "extends": "next/core-web-vitals",
-  "ignorePatterns": ["node_modules/", ".next/", "out/", "public/"],
   "rules": {
-    "@next/next/no-img-element": "off"
+    "@next/next/no-img-element": "off",
+    "react-hooks/exhaustive-deps": "warn"
   }
 }

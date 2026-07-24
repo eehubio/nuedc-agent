@@ -172,19 +172,7 @@ input, textarea, select { font: inherit; color: var(--ink); }
 .mod-card .thumb {
   height: 74px; border-radius: 9px; display: grid; place-items: center;
   background: linear-gradient(150deg, #eaf1ff, #f6f9ff); font-size: 26px;
-  border: 1px solid #e2ebfb; overflow: hidden;
-}
-/* 首页热门卡：正方形缩略图（用固定高度而非 aspect-ratio，避免与内联高度冲突塌陷） */
-.grid.cols-5 .mod-card .thumb { height: 150px; }
-/* 有实拍图时：白底 + 完整显示不裁切 */
-.thumb.has-img {
-  background: #fff; padding: 6px;
-  display: grid; place-items: center;
-}
-.thumb.has-img img {
-  max-width: 100%; max-height: 100%;
-  width: auto; height: auto;
-  object-fit: contain; display: block;
+  border: 1px solid #e2ebfb;
 }
 .mod-card b { font-size: 13.5px; line-height: 1.35; }
 .chip {
@@ -445,6 +433,12 @@ textarea.area {
 }
 
 .diagram svg { max-width: 100%; height: auto; }
+
+/* 模块缩略图：方形容器，图片完整显示不裁切不变形 */
+.mod-card .thumb.has-img { padding: 6px; background: #fff; overflow: hidden; }
+.thumb.has-img img { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* 首页热门卡：正方形缩略图，避免宽图被压扁 */
+.mod-card .thumb { aspect-ratio: 1 / 1; height: auto; }
 
 /* 详情弹窗图片区 */
 .module-gallery {
