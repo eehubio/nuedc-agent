@@ -196,18 +196,6 @@ input, textarea, select { font: inherit; color: var(--ink); }
 .progress { height: 6px; border-radius: 3px; background: #e8eef9; overflow: hidden; margin: 6px 0 12px; }
 .progress i { display: block; height: 100%; background: linear-gradient(90deg, #3b82f6, #22c55e); }
 
-.klist { counter-reset: k; display: flex; flex-direction: column; gap: 9px; }
-.klist .krow { display: flex; gap: 10px; align-items: baseline; }
-.klist .krow::before {
-  counter-increment: k; content: counter(k);
-  width: 19px; height: 19px; flex-shrink: 0; border-radius: 6px; text-align: center;
-  font-size: 11.5px; line-height: 19px; font-weight: 700; color: #fff; background: #94a3b8;
-}
-.klist .krow:nth-child(1)::before { background: #ef4444; }
-.klist .krow:nth-child(2)::before { background: #f59e0b; }
-.klist .krow:nth-child(3)::before { background: #3b82f6; }
-.klist .heat { margin-left: auto; color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
-
 .statsbar {
   margin-top: 16px; display: flex; gap: 26px; flex-wrap: wrap;
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
