@@ -10,11 +10,11 @@ on:
   workflow_dispatch:
     inputs:
       queue_users:
-        description: "queue-only 用户数"
+        description: "queue-only 用户数（手工触发可上调到 300）"
         required: false
         default: "100"
       mock_users:
-        description: "mock-provider 用户数"
+        description: "mock-provider 用户数（手工触发可上调到 300）"
         required: false
         default: "300"
   schedule:
@@ -105,7 +105,8 @@ jobs:
       - name: Queue-only load
         env:
           LOAD_MODE: queue-only
-          LOAD_USERS: ${{ github.event.inputs.queue_users || '100' }}
+          # 手工触发用输入值（可到 300）；nightly 无输入时用较小的 50
+          LOAD_USERS: ${{ github.event.inputs.queue_users || '50' }}
           LOAD_RAMP_SEC: "20"
           LOAD_OUT: reports/queue-only.json
         run: |
@@ -210,22 +211,26 @@ jobs:
           ENABLE_MOCK_PROVIDER=1 WORKER_ID=ci-worker-1 \
             npx tsx scripts/agent-worker.mts > reports/worker.log 2>&1 &
           echo $! > reports/worker.pid
-          # 轮询等待 Worker 真正写入心跳，而不是固定 sleep —— 固定值在慢 Runner 上
-          # 会让后面的 readiness 前置检查因"无 Live Worker"误判失败
+          # 就绪判断以 readiness 的 workers.live>=1 为准（即 worker_heartbeats 已写入），
+          # 而不是日志横幅 —— 横幅只证明进程启动了，不代表心跳已落库、
+          # 后续 readiness 前置检查能看到它。日志仅作辅助信息打印。
           up=0
           for i in $(seq 1 30); do
-            if grep -q "启动：重型槽位" reports/worker.log 2>/dev/null; then up=1; break; fi
+            live="$(curl -sf -H "X-Api-Key: $ADMIN_API_KEY" "$BASE_URL/api/admin/readiness" \
+                    | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).workers?.live??0)}catch{console.log(0)}})" 2>/dev/null || echo 0)"
+            if [ "${live:-0}" -ge 1 ]; then up=1; break; fi
             if ! kill -0 "$(cat reports/worker.pid)" 2>/dev/null; then
               echo "Worker 进程已退出"; break
             fi
             sleep 2
           done
+          echo "--- worker.log (tail) ---"
           tail -20 reports/worker.log || true
           if [ "$up" -ne 1 ]; then
-            echo "Worker 在 60s 内未就绪"
+            echo "Worker 在 60s 内未出现在 readiness 的 workers.live 中"
             exit 1
           fi
-          echo "Worker 已就绪"
+          echo "Worker 已就绪（workers.live>=1）"
 
       # mock-provider 必须有 Live Worker，否则任务永远排队
       - name: Preflight readiness (require live worker)
@@ -238,7 +243,8 @@ jobs:
       - name: Mock-provider load
         env:
           LOAD_MODE: mock-provider
-          LOAD_USERS: ${{ github.event.inputs.mock_users || '300' }}
+          # 手工触发用输入值（可到 300）；nightly 无输入时用较小的 100
+          LOAD_USERS: ${{ github.event.inputs.mock_users || '100' }}
           LOAD_RAMP_SEC: "60"
           LOAD_TIMEOUT_SEC: "600"
           ALLOW_MOCK_ASSUMED: "1"

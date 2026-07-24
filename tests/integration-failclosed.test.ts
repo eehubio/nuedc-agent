@@ -141,9 +141,12 @@ describe("三、readiness 区分 error 与 warning", () => {
 
   it("阻断项归入 errors", () => {
     expect(src).toMatch(/errors\.push\("数据库不可达"\)/);
-    expect(src).toMatch(/errors\.push\("没有存活的 Worker/);
-    expect(src).toMatch(/errors\.push\(`最老任务已排队/);
-    expect(src).toMatch(/errors\.push\("所有 Provider 均不可用/);
+    // full profile 下无 Worker 计为 error；queue-only 下降级为 warning
+    expect(src).toMatch(/没有存活的 Worker/);
+    expect(src).toMatch(/requiresWorker \? errors : warnings/);
+    // 队列超硬阈值同样按 profile 分流（queue-only 下堆积是预期行为）
+    expect(src).toMatch(/最老任务已排队/);
+    expect(src).toMatch(/所有 Provider 均不可用/);
   });
 
   it("非阻断项归入 warnings", () => {

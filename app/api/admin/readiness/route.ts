@@ -16,6 +16,18 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "仅管理员可查看" }, { status: 403 });
   }
 
+  // profile 决定"就绪"的判定范围，避免 API 说 ready=false 而调用方又自行忽略：
+  //   full        （默认）Web + DB + Worker + Provider + Queue 全部满足
+  //   queue-only  只要求 Web + DB —— 用于只入队、不需要 Worker 的压测
+  // 不满足当前 profile 的项降级为 warning，仍在响应里可见，只是不阻断 ready。
+  const profile = (new URL(req.url).searchParams.get("profile") || "full").toLowerCase();
+  if (profile !== "full" && profile !== "queue-only") {
+    return NextResponse.json(
+      { error: `profile 取值非法：${profile}（可选：full | queue-only）` }, { status: 400 },
+    );
+  }
+  const requiresWorker = profile === "full";
+
   // errors 阻断压测/上线；warnings 仅提示。ready 只由 errors 决定。
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -63,7 +75,10 @@ export async function GET(req: NextRequest) {
     stale: Number(r.beat_age_sec || 0) > staleMs,
   }));
   const liveWorkers = workers.filter((w) => !w.stale);
-  if (liveWorkers.length === 0) errors.push("没有存活的 Worker —— 任务会一直排队不被执行");
+  if (liveWorkers.length === 0) {
+    const msg = "没有存活的 Worker —— 任务会一直排队不被执行";
+    (requiresWorker ? errors : warnings).push(msg);
+  }
   const staleCount = workers.filter((w) => w.stale).length;
   if (staleCount > 0) {
     // 至少有一个 Live Worker 时，历史 stale 记录只是残留，不阻断
@@ -93,9 +108,14 @@ export async function GET(req: NextRequest) {
   const backlogAlarm = Number(process.env.QUEUE_BACKLOG_ALARM || 200);
   const oldestHardSec = Number(process.env.QUEUE_OLDEST_HARD_SEC || 900);   // 最老任务硬阈值
   if (oldestQueuedSec >= oldestHardSec) {
-    errors.push(`最老任务已排队 ${oldestQueuedSec}s，超过硬阈值 ${oldestHardSec}s`);
+    // queue-only 下队列本就会堆积（没有 Worker 消费），不应视为未就绪
+    const msg = `最老任务已排队 ${oldestQueuedSec}s，超过硬阈值 ${oldestHardSec}s`;
+    (requiresWorker ? errors : warnings).push(msg);
   }
-  if (totalQueued >= backlogAlarm) errors.push(`队列积压 ${totalQueued}（阈值 ${backlogAlarm}）`);
+  if (totalQueued >= backlogAlarm) {
+    const msg = `队列积压 ${totalQueued}（阈值 ${backlogAlarm}）`;
+    (requiresWorker ? errors : warnings).push(msg);
+  }
   else if (totalQueued >= backlogAlarm * 0.7) warnings.push(`队列接近告警阈值：${totalQueued}/${backlogAlarm}`);
 
   // —— Provider 健康 ——
@@ -106,12 +126,15 @@ export async function GET(req: NextRequest) {
     providerHealth = await healthSnapshot();
     taskHealth = await taskHealthSnapshot();
   } catch (e: any) {
-    errors.push("Provider 健康查询失败 —— 无法确认模型链路可用性");
+    (requiresWorker ? errors : warnings).push("Provider 健康查询失败 —— 无法确认模型链路可用性");
   }
   // 主路由全部不可用 = 阻断；个别备用不健康 = 提示
   if (Array.isArray(providerHealth) && providerHealth.length) {
     const usable = providerHealth.filter((p: any) => p.enabled !== false && p.healthy !== false);
-    if (usable.length === 0) errors.push("所有 Provider 均不可用（未配置或已熔断）");
+    if (usable.length === 0) {
+      // queue-only 不调用模型，Provider 不可用不影响入队
+      (requiresWorker ? errors : warnings).push("所有 Provider 均不可用（未配置或已熔断）");
+    }
     else if (usable.length < providerHealth.length) {
       const bad = providerHealth.filter((p: any) => p.enabled === false || p.healthy === false)
         .map((p: any) => p.provider || p.id).join("、");
@@ -148,6 +171,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     // ready 只由 errors 决定 —— warnings 不应阻断压测与上线
     ready: errors.length === 0,
+    profile,
     errors,
     warnings,
     database: { ok: true, driver: dbDriver },
