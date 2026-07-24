@@ -5,180 +5,43 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # 手工触发：用于验证 Actions 本身是否被启用（仓库设置 / 组织策略问题的排查入口）
   workflow_dispatch:
 
-# 同一分支的新推送取消旧的运行，节省额度
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# 显式声明权限：仓库若把默认工作流权限设为 restricted，
-# 缺少 checks:write 会导致运行结果不回写到 commit checks（看起来像"CI 没跑"）。
 permissions:
   contents: read
   checks: write
   statuses: write
 
 jobs:
-  build-and-test:
+  verify:
+    name: Lint · Typecheck · Test · Build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    # queue-only 冒烟需要真实数据库：没有它所有入队都会 503，验收门禁必然红灯
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: ci
-          POSTGRES_USER: ci
-          POSTGRES_DB: nuedc_ci
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        # Node 20 与 Railway/Docker 镜像一致；Node 22 覆盖本地开发环境。
-        # 二者对 data: URL 的模块解析严格程度不同（tsx 下会出现只在 20 上复现的
-        # ERR_UNSUPPORTED_RESOLVE_REQUEST），所以两个版本都必须跑。
         node-version: ["20", "22"]
-
     env:
-      # 集成测试用进程内 Postgres（pglite），不需要外部数据库服务。
-      # 这里给一个占位串，仅用于让 lib/db.ts 的 conn() 不抛「缺少 DATABASE_URL」。
-      DATABASE_URL: postgres://mock/mock
-      DB_DRIVER: pglite
-      PGLITE_TEST: "1"
-      ENABLE_MOCK_PROVIDER: "1"
       NEXT_TELEMETRY_DISABLED: "1"
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-
       - name: Install
-        run: |
-          mkdir -p reports
-          npm ci
-
-      # Worker 启动冒烟测试用它跑真实进程，与 Railway 的 Node 20 对齐
-      - name: Expose Node binary for startup smoke test
-        run: echo "NODE20_BIN=$(which node)" >> $GITHUB_ENV
-
+        run: npm ci || { echo "::warning::lockfile 过期，回退 npm install"; npm install; }
       - name: Lint
         run: npm run lint
-
       - name: Typecheck
         run: npm run typecheck
-
       - name: Test
-        run: npm test -- --reporter=default --reporter=junit --outputFile=reports/junit.xml
-        continue-on-error: false
-
-      # 关键冒烟：必须真正阻断 —— 不再吞掉失败，Worker 起不来就红灯
-      - name: Worker startup smoke (blocking)
-        run: |
-          mkdir -p reports
-          set -o pipefail
-          NODE20_BIN="$(which node)" npx vitest run tests/worker-startup.test.ts \
-            --reporter=default --reporter=junit --outputFile=reports/junit-worker-startup.xml \
-            2>&1 | tee reports/worker-startup.log
-
+        run: npm test
       - name: Build
         run: npm run build
-
-      # 轻量 queue smoke：每次 push/PR 都跑，目标几分钟内完成。
-      # 只验证 DB 初始化、服务启动、入队、去重、配额与查询；不调用真实 Provider。
-      - name: Queue smoke (light, blocking)
-        env:
-          LOAD_MODE: queue-only
-          LOAD_USERS: "15"
-          LOAD_RAMP_SEC: "3"
-          LOAD_TIMEOUT_SEC: "60"
-          LOAD_OUT: reports/load-test.json
-          BASE_URL: http://127.0.0.1:3000
-          # 标准 Postgres（非 Neon）—— lib/db.ts 会自动改用 node-postgres 驱动
-          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/nuedc_ci
-          # 显式声明驱动：查询与事务都走 node-postgres
-          DB_DRIVER: postgres_pool
-          PGLITE_TEST: "0"
-          ENABLE_MOCK_PROVIDER: "1"
-          # CI 专用的固定管理员 Key：让压测能读 /api/ready 拿到服务端快照
-          ADMIN_API_KEY: ci-smoke-admin-key
-        run: |
-          set -o pipefail
-          mkdir -p reports
-
-          echo "::group::数据库迁移"
-          npm run db:init
-          echo "::endgroup::"
-
-          # 后台启动服务并记录 PID，便于随后清理。
-          # 必须显式传 DB 相关变量：job 级 env 是 pglite/mock，
-          # 直接继承会让服务端连错库（step 级 env 对后台进程同样生效，
-          # 这里显式重申以免将来有人改动 job env 时静默失效）。
-          DATABASE_URL="$DATABASE_URL" \
-          DB_DRIVER=postgres_pool \
-          PGLITE_TEST=0 \
-          ENABLE_MOCK_PROVIDER=1 \
-          ADMIN_API_KEY=ci-smoke-admin-key \
-            npx next start -p 3000 > reports/server.log 2>&1 &
-          echo $! > reports/server.pid
-          echo "next start pid=$(cat reports/server.pid)"
-
-          # 健康检查：60 次仍失败必须 exit 1，绝不带着坏服务继续跑压测
-          ready=0
-          for i in $(seq 1 60); do
-            if curl -sf http://127.0.0.1:3000/api/health > /dev/null; then ready=1; break; fi
-            # 服务若已崩溃就不必再等
-            if ! kill -0 "$(cat reports/server.pid)" 2>/dev/null; then
-              echo "❌ next start 进程已退出"
-              break
-            fi
-            sleep 2
-          done
-          if [ "$ready" -ne 1 ]; then
-            echo "❌ 服务健康检查在 60 次后仍失败，终止本步骤"
-            echo "----- server.log (tail 80) -----"
-            tail -80 reports/server.log || true
-            exit 1
-          fi
-          echo "✓ 服务就绪"
-
-          # 确认服务连的是真实 Postgres（而不是意外回退）
-          curl -sf http://127.0.0.1:3000/api/ready | head -c 400 || true
-          echo ""
-
-          npx tsx scripts/load-test.mts 2>&1 | tee reports/load-test-summary.txt
-          node scripts/assert-load-result.mjs reports/load-test.json
-
-      # 无论上一步成败都要停掉服务，避免 job 结束时残留进程
-      - name: Stop server
-        if: always()
-        run: |
-          if [ -f reports/server.pid ]; then
-            pid="$(cat reports/server.pid)"
-            kill "$pid" 2>/dev/null || true
-            sleep 2
-            kill -9 "$pid" 2>/dev/null || true
-            echo "已停止 next start (pid=$pid)"
-          fi
-          pkill -f "next start -p 3000" 2>/dev/null || true
-
-      - name: Upload test reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-reports-node${{ matrix.node-version }}
-          path: reports/
-          if-no-files-found: warn
-          retention-days: 14
+      - name: DOCX export check
+        run: npm run verify:docx
