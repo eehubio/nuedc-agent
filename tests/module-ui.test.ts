@@ -232,3 +232,54 @@ describe("压测费用保护的适用范围", () => {
     expect(step).toContain('ALLOW_MOCK_ASSUMED: "1"');
   });
 });
+
+describe("后台图片字段的可发现性", () => {
+  it("图片字段位于「基本信息」区，而非埋在页面底部的资产区", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("components/AdminClient.tsx", "utf8");
+    const basicStart = src.indexOf("<h4>基本信息</h4>");
+    const basicEnd = src.indexOf("<h4>接口定义", basicStart);
+    const imageField = src.indexOf('图片（每行一个 URL）');
+    expect(basicStart).toBeGreaterThan(-1);
+    expect(imageField).toBeGreaterThan(basicStart);
+    expect(imageField, "图片字段应在基本信息区内，否则用户看不到").toBeLessThan(basicEnd);
+  });
+
+  it("填入图片后立即有预览与删除按钮", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("components/AdminClient.tsx", "utf8");
+    expect(src).toContain("module-gallery");
+    expect(src).toContain("图片无法加载");   // 防盗链时给出可读提示
+  });
+});
+
+describe("模块图片批量管理", () => {
+  it("提供 list/set/import/check 四个子命令", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("scripts/module-images.mts", "utf8");
+    for (const c of ['cmd === "list"', 'cmd === "set"', 'cmd === "import"', 'cmd === "check"']) {
+      expect(src, `缺少子命令 ${c}`).toContain(c);
+    }
+  });
+
+  it("check 会校验 content-type，能识别防盗链返回的非图片响应", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("scripts/module-images.mts", "utf8");
+    expect(src).toContain("content-type");
+    expect(src).toContain('type.startsWith("image/")');
+    expect(src).toContain("防盗链");
+  });
+
+  it("播种不覆盖人工录入的图片与证据记录", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("scripts/seed.mts", "utf8");
+    expect(src).toContain("old.images?.length && !m.images?.length");
+    expect(src).toContain("保留了");
+  });
+
+  it("package.json 注册了 module-images 命令", async () => {
+    const fs = await import("node:fs");
+    const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+    expect(pkg.scripts["module-images"]).toBeTruthy();
+  });
+});

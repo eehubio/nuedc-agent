@@ -17,7 +17,8 @@
     "e2e": "tsx scripts/e2e-smoke.mts",
     "verify:docx": "tsx scripts/verify-docx.mts",
     "load-test": "tsx scripts/load-test.mts",
-    "worker": "tsx scripts/agent-worker.mts"
+    "worker": "tsx scripts/agent-worker.mts",
+    "module-images": "tsx scripts/module-images.mts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

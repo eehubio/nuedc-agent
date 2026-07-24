@@ -4,4 +4,3 @@ local.db
 .env.local
 .env
 *.tsbuildinfo
-.DS_Store
