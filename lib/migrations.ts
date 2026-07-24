@@ -1,5 +1,8 @@
-import { db } from "./db";
-import { SCHEMA_SQL } from "./db";
+import { SCHEMA_SQL } from "./schema-sql";
+
+/** 数据库执行器由调用方注入，避免 migrations ↔ db 循环依赖。
+ *  循环依赖在 data-URL 入口（node --import tsx -e）下会导致模块初始化顺序错乱。 */
+type Executor = { execute: (q: string | { sql: string; args?: unknown[] }) => Promise<{ rows: any[] }> };
 
 /** 版本化数据库迁移（诊断 5.4）。
  *  - 每个迁移一个编号，执行过的记录在 schema_migrations 表
@@ -435,9 +438,9 @@ CREATE INDEX IF NOT EXISTS idx_modules_scope ON modules(scope, certification_sta
 
 let applied = false;
 
-export async function ensureMigrations(): Promise<void> {
+export async function ensureMigrations(exec: Executor): Promise<void> {
   if (applied) return;
-  const c = db();
+  const c = exec;
   await c.execute(`CREATE TABLE IF NOT EXISTS schema_migrations (
     id INTEGER PRIMARY KEY, name TEXT, applied_at TIMESTAMPTZ DEFAULT now()
   )`);

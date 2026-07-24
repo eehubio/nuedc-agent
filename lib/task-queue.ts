@@ -1,4 +1,5 @@
 import { db, ensureSchema } from "./db";
+import { commitQuota, refundQuota } from "./usage";
 
 /** 任务队列：原子认领、租约续期、崩溃回收、死信。
  *  设计要点：
@@ -82,7 +83,6 @@ export async function reclaimExpired(): Promise<{ requeued: number; dead: number
   }).catch(() => ({ rows: [] as any[] }));
 
   // 死信任务返还未完成的配额预占
-  const { refundQuota } = await import("./usage");
   for (const r of dead.rows as any[]) {
     if (r.quota_ref && r.owner_ref && r.quota_kind) {
       await refundQuota(String(r.owner_ref), String(r.quota_kind), String(r.quota_ref));
@@ -125,7 +125,6 @@ export async function completeTask(opts: {
 
   const row: any = claimed.rows[0];
   if (row.quota_ref && row.owner_ref && row.quota_kind) {
-    const { commitQuota, refundQuota } = await import("./usage");
     // 成功才扣，失败/取消一律返还
     if (opts.ok && !opts.canceled) await commitQuota(String(row.quota_ref));
     else await refundQuota(String(row.owner_ref), String(row.quota_kind), String(row.quota_ref));
@@ -165,8 +164,7 @@ export async function failTask(opts: {
   }).catch(() => {});
 
   if (t.quota_ref && t.owner_ref && t.quota_kind) {
-    const { refundQuota } = await import("./usage");
-    await refundQuota(String(t.owner_ref), String(t.quota_kind), String(t.quota_ref));
+      await refundQuota(String(t.owner_ref), String(t.quota_kind), String(t.quota_ref));
   }
   return "dead";
 }

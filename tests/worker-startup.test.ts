@@ -31,13 +31,16 @@ function runWorker(env: Record<string, string>, killAfterMs: number): Promise<{ 
   });
 }
 
-/** 只做模块解析：--check 无法用于 tsx，改用最小入口 import 验证 */
+/** 模块加载检查。
+ *  必须用「文件入口」而非 node -e：后者走 data-URL 加载上下文，
+ *  tsx 在该上下文下会把 TS 模块识别成 CJS 并丢失具名导出，
+ *  产生与生产环境不符的假失败（生产是 npm run worker，即文件入口）。 */
 function runCheck(): Promise<{ code: number | null; out: string }> {
   return new Promise((resolve) => {
-    const child = spawn(NODE_BIN, ["--import", "tsx", "-e",
-      "import('./scripts/agent-worker.mts').then(()=>process.exit(0)).catch(e=>{console.error(e.message);process.exit(3)})"],
-      { env: { ...process.env, WORKER_SMOKE_IMPORT_ONLY: "1", DATABASE_URL: "", ENABLE_MOCK_PROVIDER: "1" },
-        cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(NODE_BIN, ["--import", "tsx", "scripts/agent-worker.mts"], {
+      env: { ...process.env, WORKER_SMOKE_IMPORT_ONLY: "1", DATABASE_URL: "", ENABLE_MOCK_PROVIDER: "1" },
+      cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"],
+    });
     let out = "";
     child.stdout.on("data", (d) => { out += String(d); });
     child.stderr.on("data", (d) => { out += String(d); });
@@ -51,11 +54,14 @@ describe("Worker 启动冒烟", () => {
     expect(existsSync("scripts/agent-worker.mts")).toBe(true);
   });
 
-  it("模块能被完整加载：不出现 import/语法级失败", async () => {
-    // 只做模块解析，不进入主循环 —— 能抓到缺依赖、路径写错、语法错误
+  // 注：缺失 import / 类型错误由 `npm run typecheck` 覆盖（.mts 已纳入 tsconfig include）。
+  // 本文件聚焦 tsc 抓不到的运行时问题：能否真正启动、连库、优雅退出。
+  it("Worker 进程能真正启动并完成模块初始化", async () => {
     const { out, code } = await runCheck();
-    expect(code, `Worker 模块加载失败：\n${out.slice(0, 600)}`).toBe(0);
-    expect(out).not.toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module|SyntaxError/);
+    expect(code, `Worker 启动失败：\n${out.slice(0, 600)}`).toBe(0);
+    expect(out).toContain("模块加载成功");
+    // 动态 import 在某些入口下解析失败会以此形式暴露
+    expect(out).not.toMatch(/ERR_UNSUPPORTED_RESOLVE_REQUEST|resolve module specifier/);
   }, 30_000);
 
   it("缺少 DATABASE_URL 时给出明确错误并退出，而不是静默挂起", async () => {
@@ -83,5 +89,7 @@ describe("Worker 启动冒烟", () => {
     expect(out).toContain("启动");
     expect(out).toMatch(/重型槽位 1/);
     expect(out).toMatch(/优雅退出|停止认领/);
+    // Worker 在真实数据库下必须能完成迁移，不得出现模块解析失败
+    expect(out).not.toMatch(/ERR_UNSUPPORTED_RESOLVE_REQUEST|resolve module specifier/);
   }, 30_000);
 });
