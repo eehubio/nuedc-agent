@@ -17,19 +17,15 @@
 
 import { hostname } from "node:os";
 import "../lib/agents/index";
-import { runAgent, isRetryable, classifyAgentError } from "../lib/agents/base";
-import { claimTask, heartbeat, reclaimExpired, completeTask, failTask, workerHeartbeat, workerDeregister, pruneStaleHeartbeats, HEARTBEAT_MS, type ClaimedTask } from "../lib/task-queue";
-import { db, ensureSchema, closeTxPool } from "../lib/db";
-import { metrics } from "../lib/worker-metrics";
+import { runAgent } from "../lib/agents/base";
+import { claimTask, heartbeat, reclaimExpired, completeTask, failTask, HEARTBEAT_MS, type ClaimedTask } from "../lib/task-queue";
+import { db, ensureSchema } from "../lib/db";
 import type { AgentType, ProjectStage } from "../lib/types";
 
 const WORKER_ID = process.env.WORKER_ID || `${hostname()}:${process.pid}`;
 const HEAVY_SLOTS = Number(process.env.WORKER_HEAVY_SLOTS || 2);
 const LIGHT_SLOTS = Number(process.env.WORKER_LIGHT_SLOTS || 6);
 const POLL_MS = Number(process.env.WORKER_POLL_MS || 1500);
-/** 取消轮询间隔：独立于 30 秒的租约心跳。
- *  取消需要尽快 abort 掉正在进行的 Provider 请求，否则会继续烧 token。 */
-const CANCEL_POLL_MS = Number(process.env.WORKER_CANCEL_POLL_MS || 3000);
 
 let shuttingDown = false;
 let inFlight = 0;
@@ -41,34 +37,10 @@ function log(...args: any[]) {
 
 async function executeOne(task: ClaimedTask): Promise<void> {
   inFlight++;
-  metrics.taskStarted();
-  const abort = new AbortController();
-  let canceledByPoll = false;
-
-  // 租约心跳：30 秒续租一次，仅维持任务归属
   const hb = setInterval(async () => {
-    metrics.heartbeat();
     const alive = await heartbeat(task.task_id, WORKER_ID);
     if (!alive) log(`⚠ ${task.task_id} 租约已失效（可能已被回收），本次结果将被丢弃`);
   }, HEARTBEAT_MS);
-
-  // 取消轮询：独立于心跳，默认 3 秒一次。
-  // 与心跳合并会让取消最坏延迟 30 秒才生效，Provider 请求白烧那么久的 token。
-  const cancelPoll = setInterval(async () => {
-    if (abort.signal.aborted) return;
-    metrics.cancelPoll();
-    const c = await db().execute({
-      sql: "SELECT cancel_requested FROM agent_tasks WHERE task_id=?", args: [task.task_id],
-    }).catch(() => { metrics.cancelPollError(); return { rows: [] as any[] }; });
-    if (Number((c.rows[0] as any)?.cancel_requested || 0) === 1) {
-      const detectedAt = Date.now();
-      canceledByPoll = true;
-      metrics.cancelRequested();
-      abort.abort();
-      metrics.cancelAbortLatency(Date.now() - detectedAt);
-      log(`✋ ${task.task_id} 收到取消请求，正在中断 Provider 调用`);
-    }
-  }, CANCEL_POLL_MS);
 
   try {
     const input = task.input ? JSON.parse(task.input) : {};
@@ -78,13 +50,13 @@ async function executeOne(task: ClaimedTask): Promise<void> {
       if (rs.rows.length) stage = String(rs.rows[0].stage) as ProjectStage;
     }
 
-    // 执行前已被请求取消 → 直接作废，不发起任何 Provider 调用
+    // 执行期间被请求取消 → 结果作废（LLM 调用无法中途打断，只能事后判定）
     const cancelCheck = await db().execute({
       sql: "SELECT cancel_requested FROM agent_tasks WHERE task_id=?", args: [task.task_id],
     }).catch(() => ({ rows: [] as any[] }));
     if (Number((cancelCheck.rows[0] as any)?.cancel_requested || 0) === 1) {
       await completeTask({ taskId: task.task_id, workerId: WORKER_ID, ok: false, canceled: true, result: null });
-      log(`✋ ${task.task_id} 已取消（未开始，全额退款）`);
+      log(`✋ ${task.task_id} 已取消`);
       return;
     }
 
@@ -94,66 +66,30 @@ async function executeOne(task: ClaimedTask): Promise<void> {
       tier: task.tier as any,
       owner: task.owner_ref,
       taskId: task.task_id,
-      signal: abort.signal,
     });
 
     const canceled = await db().execute({
       sql: "SELECT cancel_requested FROM agent_tasks WHERE task_id=?", args: [task.task_id],
     }).catch(() => ({ rows: [] as any[] }));
-    const wasCanceled = canceledByPoll || Number((canceled.rows[0] as any)?.cancel_requested || 0) === 1
-      || result.error_code === "CANCELED";
+    const wasCanceled = Number((canceled.rows[0] as any)?.cancel_requested || 0) === 1;
 
-    if (wasCanceled) {
-      // 取消：canceled 终态。completeTask 会按实际用量计费、未用部分退款（配额 refund）。
-      await completeTask({
-        taskId: task.task_id, workerId: WORKER_ID,
-        ok: false, canceled: true, result, runId: result.run_id, errorCode: "CANCELED",
-      });
-      log(`✋ ${task.task_id} ${task.agent_type} 已取消（已用 token 计费，未用部分退款）`);
-    } else if (result.ok) {
-      await completeTask({
-        taskId: task.task_id, workerId: WORKER_ID,
-        ok: true, canceled: false, result, runId: result.run_id, errorCode: null,
-      });
-      log(`✓ ${task.task_id} ${task.agent_type} (${task.task_type || "-"})`);
-    } else {
-      // Agent 失败：结构化错误决定重试还是终态
-      const retryable = result.retryable === true || isRetryable(result.error_code);
-      if (retryable) {
-        const outcome = await failTask({
-          taskId: task.task_id, workerId: WORKER_ID,
-          message: result.message || "agent failed",
-          errorCode: result.error_code || "UNKNOWN", retryable: true,
-        });
-        log(`↻ ${task.task_id} ${task.agent_type} 失败(${result.error_code}) → ${outcome}: ${(result.message || "").slice(0, 60)}`);
-      } else {
-        await completeTask({
-          taskId: task.task_id, workerId: WORKER_ID,
-          ok: false, canceled: false, result, runId: result.run_id,
-          errorCode: result.error_code || "UNKNOWN",
-        });
-        log(`✗ ${task.task_id} ${task.agent_type} 不可重试(${result.error_code}): ${(result.message || "").slice(0, 60)}`);
-      }
-    }
+    await completeTask({
+      taskId: task.task_id, workerId: WORKER_ID,
+      ok: result.ok, canceled: wasCanceled, result, runId: result.run_id,
+      errorCode: result.ok ? null : "AGENT_FAILED",
+    });
+    log(`${result.ok ? "✓" : "✗"} ${task.task_id} ${task.agent_type} (${task.task_type || "-"})${result.ok ? "" : " · " + (result.message || "").slice(0, 60)}`);
   } catch (e: any) {
-    // 取消触发的异常：按取消处理，而非重试
-    if (canceledByPoll || abort.signal.aborted) {
-      await completeTask({ taskId: task.task_id, workerId: WORKER_ID, ok: false, canceled: true, result: null, errorCode: "CANCELED" }).catch(() => {});
-      log(`✋ ${task.task_id} 取消中断`);
-    } else {
-      const msg = String(e?.message || e);
-      const code = classifyAgentError(msg);
-      const retryable = isRetryable(code) || /timeout|ECONN|fetch failed|socket|502|503|504/i.test(msg);
-      const outcome = await failTask({
-        taskId: task.task_id, workerId: WORKER_ID, message: msg,
-        errorCode: code, retryable,
-      });
-      log(`✗ ${task.task_id} 异常(${code}) → ${outcome}: ${msg.slice(0, 100)}`);
-    }
+    const msg = String(e?.message || e);
+    // 网络/超时类错误可重试；业务错误不重试
+    const retryable = /timeout|ECONN|fetch failed|socket|502|503|504/i.test(msg);
+    const outcome = await failTask({
+      taskId: task.task_id, workerId: WORKER_ID, message: msg,
+      errorCode: retryable ? "TRANSIENT" : "EXECUTION_ERROR", retryable,
+    });
+    log(`✗ ${task.task_id} 异常 → ${outcome}: ${msg.slice(0, 100)}`);
   } finally {
     clearInterval(hb);
-    clearInterval(cancelPoll);
-    metrics.taskEnded();
     inFlight--;
   }
 }
@@ -164,9 +100,6 @@ async function reclaimLoop() {
     try {
       const { requeued, dead } = await reclaimExpired();
       if (requeued || dead) log(`回收：${requeued} 个重新入队，${dead} 个进入死信`);
-      // 顺带清理 24 小时以上的僵尸心跳（容器重建会留下永不更新的行）
-      const pruned = await pruneStaleHeartbeats(24);
-      if (pruned) log(`清理僵尸心跳 ${pruned} 条`);
     } catch (e: any) {
       log("回收循环异常:", String(e?.message || e).slice(0, 120));
     }
@@ -198,29 +131,9 @@ async function consumeLoop(heavy: boolean, slots: number) {
   await Promise.allSettled([...running]);
 }
 
-/** Worker 存活心跳循环：上报槽位与在途数，供 readiness 与失联报警使用 */
-async function workerBeatLoop() {
-  while (!shuttingDown) {
-    try {
-      await workerHeartbeat({
-        workerId: WORKER_ID, host: hostname(), pid: process.pid,
-        heavySlots: HEAVY_SLOTS, lightSlots: LIGHT_SLOTS, inFlight,
-      });
-    } catch (e: any) {
-      log("心跳上报异常:", String(e?.message || e).slice(0, 120));
-    }
-    await sleep(HEARTBEAT_MS);
-  }
-}
-
 async function main() {
   await ensureSchema();
   log(`启动：重型槽位 ${HEAVY_SLOTS} · 轻型槽位 ${LIGHT_SLOTS} · 轮询 ${POLL_MS}ms`);
-  // 启动即上报一次，避免 readiness 在首个心跳周期前误判无 Worker
-  await workerHeartbeat({
-    workerId: WORKER_ID, host: hostname(), pid: process.pid,
-    heavySlots: HEAVY_SLOTS, lightSlots: LIGHT_SLOTS, inFlight: 0,
-  });
 
   const shutdown = async (sig: string) => {
     if (shuttingDown) return;
@@ -234,10 +147,6 @@ async function main() {
             WHERE worker_id=? AND status='running'`,
       args: [WORKER_ID],
     }).catch(() => {});
-    // 注销心跳，避免被误判为「失联 Worker」
-    await workerDeregister(WORKER_ID);
-    // 关闭共享事务连接池，释放 Neon 连接
-    await closeTxPool();
     log("已优雅退出");
     process.exit(0);
   };
@@ -248,7 +157,6 @@ async function main() {
     consumeLoop(true, HEAVY_SLOTS),
     consumeLoop(false, LIGHT_SLOTS),
     reclaimLoop(),
-    workerBeatLoop(),
   ]);
 }
 

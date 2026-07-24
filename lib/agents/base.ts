@@ -2,8 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { db, uid, ensureSchema } from "../db";
 import type { AgentType, ProjectStage } from "../types";
 import { STAGE_ALLOWED_AGENTS } from "../types";
-import { saveArtifact } from "../artifacts";
-import { AGENT_CONSUMES } from "../artifact-graph";
 
 export interface AgentContext {
   owner?: string | null;
@@ -11,65 +9,6 @@ export interface AgentContext {
   projectId: string | null;
   stage: ProjectStage;
   tier: string;
-  /** 外部取消信号：透传到网关，取消时中断正在进行的 Provider 调用 */
-  signal?: AbortSignal;
-}
-
-/** 结构化错误码。Worker 据此决定 completeTask(error) 还是 failTask(retry)。
- *  可重试：瞬时性、外部依赖抖动；不可重试：输入/权限/门禁/网关内部已耗尽重试的结构错误。 */
-export type AgentErrorCode =
-  // —— 可重试 ——
-  | "RATE_LIMIT"            // 429
-  | "TIMEOUT"
-  | "NETWORK"
-  | "SERVER"               // 502/503/504
-  | "PROVIDER_UNAVAILABLE"
-  | "TEMPORARY_DATABASE_ERROR"
-  // —— 不可重试 ——
-  | "CANCELED"             // 用户主动取消，重试无意义
-  | "SCHEMA_INVALID"       // 网关内部重试上限后仍不合法结构
-  | "INVALID_INPUT"
-  | "PERMISSION_DENIED"
-  | "STAGE_BLOCKED"
-  | "REQUIREMENT_NOT_CONFIRMED"
-  | "NO_PROVIDER"
-  | "BUDGET_EXCEEDED"
-  | "SYSTEM_MODE"
-  | "UNKNOWN";
-
-const RETRYABLE_CODES: ReadonlySet<AgentErrorCode> = new Set<AgentErrorCode>([
-  "RATE_LIMIT", "TIMEOUT", "NETWORK", "SERVER", "PROVIDER_UNAVAILABLE", "TEMPORARY_DATABASE_ERROR",
-]);
-
-/** 是否可重试。未知错误默认不可重试（宁可让用户重发，也不无谓烧钱）。 */
-export function isRetryable(code?: AgentErrorCode | string | null): boolean {
-  return !!code && RETRYABLE_CODES.has(code as AgentErrorCode);
-}
-
-/** 把网关 errorCode / provider 错误码映射为 Agent 结构化错误码。
- *  同时识别中英文关键词，因为 message 可能是中文（如"请求超时"）。 */
-export function classifyAgentError(raw?: string | null): AgentErrorCode {
-  const orig = String(raw || "");
-  const s = orig.toUpperCase();
-  if (!s) return "UNKNOWN";
-  // 取消优先判定：AbortError 的 message 常含 "abort"，若放在后面会被误判为 UNKNOWN
-  if (s.includes("ABORTERROR") || s.includes("ABORTED") || s.includes("ABORT")
-      || s.includes("CANCELED") || s.includes("CANCELLED")
-      || orig.includes("取消")) return "CANCELED";
-  if (s.includes("RATE_LIMIT") || s.includes("429") || orig.includes("限流")) return "RATE_LIMIT";
-  if (s.includes("TIMEOUT") || orig.includes("超时")) return "TIMEOUT";
-  if (s.includes("NETWORK") || s.includes("ECONN") || s.includes("FETCH FAILED") || s.includes("SOCKET") || orig.includes("网络")) return "NETWORK";
-  if (s.includes("502") || s.includes("503") || s.includes("504") || s === "SERVER" || s.includes("SERVER")) return "SERVER";
-  if (s.includes("NO_PROVIDER") || s.includes("PROVIDER_UNAVAILABLE") || orig.includes("不可用")) return "PROVIDER_UNAVAILABLE";
-  if (s.includes("TEMPORARY_DATABASE") || s.includes("DB_TEMP")) return "TEMPORARY_DATABASE_ERROR";
-  if (s.includes("SCHEMA")) return "SCHEMA_INVALID";
-  if (s.includes("INVALID_INPUT") || s.includes("BAD_INPUT")) return "INVALID_INPUT";
-  if (s.includes("PERMISSION") || s.includes("AUTH") || s.includes("REGION_BLOCKED")) return "PERMISSION_DENIED";
-  if (s.includes("STAGE") || s.includes("BLOCKED_BY_STAGE")) return "STAGE_BLOCKED";
-  if (s.includes("REQUIREMENT_NOT_CONFIRMED")) return "REQUIREMENT_NOT_CONFIRMED";
-  if (s.includes("BUDGET")) return "BUDGET_EXCEEDED";
-  if (s.includes("SYSTEM_MODE")) return "SYSTEM_MODE";
-  return "UNKNOWN";
 }
 
 export interface AgentResult {
@@ -78,12 +17,6 @@ export interface AgentResult {
   output: unknown;
   human_review_required?: boolean;
   message?: string;
-  /** 结构化错误码（ok=false 时有意义），Worker 据此决定是否重试 */
-  error_code?: AgentErrorCode;
-  /** 是否可重试。未显式给出时由 error_code 推断 */
-  retryable?: boolean;
-  /** 底层 Provider 原始错误码（诊断用，如 RATE_LIMIT/SERVER/TIMEOUT） */
-  provider_error_code?: string | null;
 }
 
 export type AgentFn = (input: any, ctx: AgentContext) => Promise<AgentResult>;
@@ -105,8 +38,6 @@ export interface AgentRunContext {
   /** 本次运行中网关是否返回过 partial 结果（截断后修复）。
    *  放在 ALS 上下文里而非模块级变量，避免并发串线。 */
   partialSeen?: { value: boolean };
-  /** 外部取消信号，llmJson 读取后透传给网关 */
-  signal?: AbortSignal;
 }
 
 const agentContextStore = new AsyncLocalStorage<AgentRunContext>();
@@ -130,7 +61,7 @@ export function runAgent(
 ): Promise<AgentResult & { run_id: string }> {
   return withAgentContext(
     { owner: ctx.owner ?? null, projectId: ctx.projectId, taskId: ctx.taskId ?? null, agent: type,
-      partialSeen: { value: false }, signal: ctx.signal },
+      partialSeen: { value: false } },
     () => runAgentInner(type, input, ctx),
   );
 }
@@ -152,8 +83,6 @@ async function runAgentInner(
       ok: false,
       output: null,
       message: `项目当前阶段 ${ctx.stage} 不允许调用 ${type}。允许的 Agent：${allowed.join("、")}`,
-      error_code: "STAGE_BLOCKED",
-      retryable: false,
     };
     await logRun(runId, ctx, type, input, result, Date.now() - t0, "blocked_by_stage");
     return { ...result, run_id: runId };
@@ -161,21 +90,16 @@ async function runAgentInner(
 
   const fn = registry.get(type);
   if (!fn) {
-    return { ok: false, output: null, message: `未知 Agent：${type}`, error_code: "INVALID_INPUT", retryable: false, run_id: runId };
+    return { ok: false, output: null, message: `未知 Agent：${type}`, run_id: runId };
   }
 
   try {
     const result = await fn(input, ctx);
-    // 归一化错误码：Agent 未显式给出 error_code 时，从 message 推断；retryable 从码推断
-    if (!result.ok) {
-      const code = result.error_code || classifyAgentError(result.provider_error_code || result.message);
-      result.error_code = code;
-      if (result.retryable === undefined) result.retryable = isRetryable(code);
-    }
-    // 按 result 派生状态：result.ok=false 时绝不能记 "ok"
-    await logRun(runId, ctx, type, input, result, Date.now() - t0, runStatusOf(result));
+    await logRun(runId, ctx, type, input, result, Date.now() - t0, "ok");
     // Artifact 落库：版本递增 + 方案变更自动级联失效下游
     if (result.ok && result.artifact_type) {
+      const { saveArtifact } = await import("../artifacts");
+      const { AGENT_CONSUMES } = await import("../artifact-graph");
       // 实例级溯源：查本 Agent 消费的上游类型当前最新版本 id
       let sourceIds: string[] = [];
       if (ctx.projectId && AGENT_CONSUMES[type]?.length) {
@@ -188,52 +112,18 @@ async function runAgentInner(
         });
         sourceIds = rs.rows.map((r) => String(r.artifact_id));
       }
-
-      // Partial 统一由落库层判定：只要本次运行出现过截断修复，一律 draft + 需人工确认，
-      // 禁止自动 reviewed。不依赖每个 Agent 自己在 output 里塞 partial 字段。
-      const partial = sawPartial();
-      const humanReview = partial || result.human_review_required === true;
-      const status = humanReview ? "draft" : "reviewed";
-      const metadata = partial
-        ? { partial_output: true, repair_applied: true, review_hint: "不完整输出，需要人工确认" }
-        : undefined;
-
       await saveArtifact({
         projectId: ctx.projectId, type: result.artifact_type, content: result.output,
-        createdBy: type, status,
-        humanReviewRequired: humanReview,
-        metadata,
+        createdBy: type, status: result.human_review_required ? "draft" : "reviewed",
         sourceArtifactIds: sourceIds, changeReason: `run:${type}`,
       });
-      // 把落库层的判定回传给调用方（Worker/前端据此展示"需人工确认"）
-      result.human_review_required = humanReview;
     }
     return { ...result, run_id: runId };
   } catch (e: any) {
-    const msg = e?.message || String(e);
-    const code = classifyAgentError(msg);
-    const result: AgentResult = { ok: false, output: null, message: msg, error_code: code, retryable: isRetryable(code) };
-    await logRun(runId, ctx, type, input, result, Date.now() - t0, runStatusOf(result));
+    const result: AgentResult = { ok: false, output: null, message: e?.message || String(e) };
+    await logRun(runId, ctx, type, input, result, Date.now() - t0, "error");
     return { ...result, run_id: runId };
   }
-}
-
-/** agent_runs.status 取值（统计与排障口径）：
- *   ok               成功
- *   retryable_error  可重试失败（429/超时/网络/5xx 等），Worker 会重新入队
- *   error            不可重试失败（schema/输入/权限等）
- *   canceled         用户取消
- *   blocked_by_stage 被项目状态机门禁拦截
- *  以前无论 result.ok 是否为 false 都写 "ok"，导致失败率统计完全失真。 */
-export type AgentRunStatus = "ok" | "retryable_error" | "error" | "canceled" | "blocked_by_stage";
-
-export function runStatusOf(result: AgentResult): AgentRunStatus {
-  if (result.ok) return "ok";
-  const code = result.error_code;
-  if (code === "CANCELED") return "canceled";
-  if (code === "STAGE_BLOCKED") return "blocked_by_stage";
-  const retryable = result.retryable === true || isRetryable(code);
-  return retryable ? "retryable_error" : "error";
 }
 
 async function logRun(
@@ -243,7 +133,7 @@ async function logRun(
   input: any,
   result: AgentResult,
   ms: number,
-  status: AgentRunStatus
+  status: string
 ) {
   try {
     await db().execute({

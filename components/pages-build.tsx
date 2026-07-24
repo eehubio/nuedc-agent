@@ -220,6 +220,13 @@ export function SolutionPage({ ctx }: { ctx: any }) {
       </div>
 
       {!ctx.requirements && <ProblemPicker ctx={ctx} />}
+      {ctx.shortlist?.length > 0 && (
+        <div className="issue info" style={{ display: "block", marginBottom: 10 }}>
+          🔧 已从「模块选型」选用 {ctx.shortlist.length} 个模块，生成方案时会优先考虑：
+          {ctx.modules.filter((m: any) => ctx.shortlist.includes(m.id)).map((m: any) => m.name).join("、")}
+          <button className="btn ghost sm" style={{ marginLeft: 8 }} onClick={() => ctx.setShortlist([])}>清空</button>
+        </div>
+      )}
 
       {showJump && (
         <button className="jump-fab" onClick={() => solRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
@@ -1087,6 +1094,15 @@ function BlockInfoModal({ item, onClose }: { item: any; onClose: () => void }) {
         {isModule ? (
           <>
             <p className="hint">{item.main_chip} · {item.category}</p>
+            {(item.images || []).length > 0 && (
+              <div className="module-gallery">
+                {(item.images || []).slice(0, 3).map((src: string, i: number) => (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img key={i} src={src} alt={`${item.name} 图 ${i + 1}`} loading="lazy"
+                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                ))}
+              </div>
+            )}
             <p>{item.description}</p>
             {item.interfaces?.length > 0 && (
               <>

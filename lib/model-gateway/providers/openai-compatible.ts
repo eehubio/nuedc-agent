@@ -69,7 +69,7 @@ export function createOpenAICompatibleProvider(cfg: {
           temperature: req.temperature,
           ...(req.json ? { response_format: { type: "json_object" } } : {}),
         }),
-      }, req.timeoutMs, req.signal);
+      }, req.timeoutMs);
 
       if (!res.ok) throw classifyHttpError(res.status, await res.text());
 

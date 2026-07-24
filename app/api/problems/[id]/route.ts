@@ -3,7 +3,6 @@ import { resolveTier } from "@/lib/auth";
 import {
   getVersionContent, getDraftVersion, getPublishedVersion, saveExtraction,
   createDraftVersion, publicationChecklist, addReview,
-  withVersionWriteLock, versionIdOf, VersionWriteError,
 } from "@/lib/problem-center";
 import { db, ensureSchema } from "@/lib/db";
 
@@ -52,61 +51,32 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const versionId: string | undefined = b.version_id;
   if (!versionId) return NextResponse.json({ error: "需要 version_id" }, { status: 400 });
 
-  // 逐条确认/驳回需求（受版本写锁保护：已发布版本一律拒绝）
+  // 逐条确认/驳回需求
   if (b.action === "confirm_requirement") {
-    try {
-      await withVersionWriteLock(versionId, async (tx) => {
-        await tx.execute({
-          sql: `UPDATE problem_requirements SET status=?, confirmed_by=?, confirmed_at=now()
-                WHERE version_id=? AND requirement_no=?`,
-          args: [b.status === "REJECTED" ? "REJECTED" : "CONFIRMED", tier, versionId, b.requirement_no],
-        });
-      });
-    } catch (e: any) {
-      if (e instanceof VersionWriteError) return NextResponse.json({ error: e.message }, { status: 409 });
-      throw e;
-    }
+    await db().execute({
+      sql: `UPDATE problem_requirements SET status=?, confirmed_by=?, confirmed_at=now()
+            WHERE version_id=? AND requirement_no=?`,
+      args: [b.status === "REJECTED" ? "REJECTED" : "CONFIRMED", tier, versionId, b.requirement_no],
+    });
     return NextResponse.json({ ok: true });
   }
   if (b.action === "confirm_all") {
-    try {
-      await withVersionWriteLock(versionId, async (tx) => {
-        await tx.execute({
-          sql: `UPDATE problem_requirements SET status='CONFIRMED', confirmed_by=?, confirmed_at=now()
-                WHERE version_id=? AND status NOT IN ('CONFIRMED','REJECTED')`,
-          args: [tier, versionId],
-        });
-      });
-    } catch (e: any) {
-      if (e instanceof VersionWriteError) return NextResponse.json({ error: e.message }, { status: 409 });
-      throw e;
-    }
+    await db().execute({
+      sql: `UPDATE problem_requirements SET status='CONFIRMED', confirmed_by=?, confirmed_at=now()
+            WHERE version_id=? AND status NOT IN ('CONFIRMED','REJECTED')`,
+      args: [tier, versionId],
+    });
     return NextResponse.json({ ok: true });
   }
   if (b.action === "resolve_note") {
-    // note_id 反查所属版本，再走同一把锁
-    const vid = await versionIdOf("problem_notes", "note_id", String(b.note_id));
-    if (!vid) return NextResponse.json({ error: "说明不存在" }, { status: 404 });
-    try {
-      await withVersionWriteLock(vid, async (tx) => {
-        await tx.execute({
-          sql: "UPDATE problem_notes SET resolved=1, resolution=? WHERE note_id=?",
-          args: [String(b.resolution || "已人工处理").slice(0, 300), b.note_id],
-        });
-      });
-    } catch (e: any) {
-      if (e instanceof VersionWriteError) return NextResponse.json({ error: e.message }, { status: 409 });
-      throw e;
-    }
+    await db().execute({
+      sql: "UPDATE problem_notes SET resolved=1, resolution=? WHERE note_id=?",
+      args: [String(b.resolution || "已人工处理").slice(0, 300), b.note_id],
+    });
     return NextResponse.json({ ok: true });
   }
   if (b.action === "review") {
-    try {
-      await addReview(versionId, b.reviewer || tier, b.decision === "reject" ? "reject" : "approve", b.note);
-    } catch (e: any) {
-      if (e instanceof VersionWriteError) return NextResponse.json({ error: e.message }, { status: 409 });
-      throw e;
-    }
+    await addReview(versionId, b.reviewer || tier, b.decision === "reject" ? "reject" : "approve", b.note);
     return NextResponse.json({ ok: true });
   }
 

@@ -1,7 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { TYPICAL_DIRECTIONS, FEATURES, COMPETITION_DATE, COMPETITION_NAME } from "../data/prep-content";
-import { ModuleThumb } from "./ModuleThumb";
+import { PREP_TASKS, KNOWLEDGE_POINTS, TYPICAL_DIRECTIONS, FEATURES, COMPETITION_DATE, COMPETITION_NAME } from "../data/prep-content";
 import { CATEGORY_TREE, CAT_ICON, categoryLabel } from "../data/categories";
 import { STAGES, STAGE_LABEL } from "./Platform";
 
@@ -16,9 +15,26 @@ export function CertBadge({ s }: { s: string }) {
 }
 function modIcon(cat: string) { return CAT_ICON[String(cat).split(".")[0]] || "🔲"; }
 
+/** 模块缩略图：录入了 images 就显示实拍图，否则回退到分类图标。
+ *  方形容器 + object-fit:contain，保证不同比例的商品图都能完整显示不变形。 */
+export function ModuleThumb({ m, size }: { m: any; size?: number }) {
+  const src = (m?.images || [])[0];
+  const style = size ? { width: size, height: size, flexShrink: 0 } : undefined;
+  if (!src) return <div className="thumb" style={style}>{modIcon(m?.category)}</div>;
+  return (
+    <div className="thumb has-img" style={style}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={src} alt={m?.name || "模块图片"} loading="lazy"
+        onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+    </div>
+  );
+}
+
 /* ================= 首页 ================= */
 export function HomePage({ ctx }: { ctx: any }) {
+  const [done, setDone] = useState<boolean[]>(PREP_TASKS.map(() => false));
   const [detail, setDetail] = useState<any>(null);
+  const doneN = done.filter(Boolean).length;
   const hot = useMemo(
     () => [...ctx.modules].sort((a, b) => (b.downloads || 0) - (a.downloads || 0) || (b.price || 0) - (a.price || 0)).slice(0, 5),
     [ctx.modules]
@@ -49,36 +65,61 @@ export function HomePage({ ctx }: { ctx: any }) {
       <Dashboard ctx={ctx} />
       <AccountCard />
 
-      <div style={{ display: "grid", gap: 14 }}>
-        <div className="card">
-          <h3>热门模块推荐 <span className="more" onClick={() => ctx.setPage("modules")}>更多模块 →</span></h3>
-          <div className="grid cols-5">
-            {hot.map((m) => (
-              <button key={m.id} className="mod-card as-button" onClick={() => setDetail(m)}
-                title={`查看 ${m.name} 详情`}>
-                <ModuleThumb id={m.id} hasImage={m.has_image} icon={modIcon(m.category)} />
-                <div>
-                  <CertBadge s={m.certification_status} />
-                  {(m.tags || []).slice(0, 1).map((t: string) => <span key={t} className="chip">{t}</span>)}
-                </div>
-                <b>{m.name}</b>
-                <span className="hint">{m.main_chip}</span>
-              </button>
-            ))}
-            {!hot.length && <span className="hint">模块库为空 —— 运行 npm run db:seed 导入种子模块。</span>}
+      <div className="grid" style={{ gridTemplateColumns: "1fr 300px", alignItems: "start" }}>
+        <div style={{ display: "grid", gap: 14 }}>
+          <div className="card">
+            <h3>热门模块推荐 <span className="more" onClick={() => ctx.setPage("modules")}>更多模块 →</span></h3>
+            <div className="grid cols-5">
+              {hot.map((m) => (
+                <button key={m.id} className="mod-card as-button" onClick={() => setDetail(m)}
+                  title={`查看 ${m.name} 详情`}>
+                  <ModuleThumb m={m} />
+                  <div>
+                    <CertBadge s={m.certification_status} />
+                    {(m.tags || []).slice(0, 1).map((t: string) => <span key={t} className="chip">{t}</span>)}
+                  </div>
+                  <b>{m.name}</b>
+                  <span className="hint">{m.main_chip}</span>
+                </button>
+              ))}
+              {!hot.length && <span className="hint">模块库为空 —— 运行 npm run db:seed 导入种子模块。</span>}
+            </div>
+          </div>
+
+          <div className="card">
+            <h3>典型应用方向 <span className="hint" style={{ fontWeight: 400 }}>点击即用该方向示例开始方案设计</span></h3>
+            <div className="grid cols-5">
+              {TYPICAL_DIRECTIONS.map((d) => (
+                <button key={d.name} className="fcard" onClick={() => ctx.startFromDirection(d.seed)}>
+                  <span className="fi" style={{ background: "#eef3fd", color: "#1d4ed8", fontSize: 22 }}>{d.icon}</span>
+                  <b>{d.name}</b>
+                  <small>{d.tags.join(" / ")}</small>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
-        <div className="card">
-          <h3>典型应用方向 <span className="hint" style={{ fontWeight: 400 }}>点击即用该方向示例开始方案设计</span></h3>
-          <div className="grid cols-5">
-            {TYPICAL_DIRECTIONS.map((d) => (
-              <button key={d.name} className="fcard" onClick={() => ctx.startFromDirection(d.seed)}>
-                <span className="fi" style={{ background: "#eef3fd", color: "#1d4ed8", fontSize: 22 }}>{d.icon}</span>
-                <b>{d.name}</b>
-                <small>{d.tags.join(" / ")}</small>
-              </button>
-            ))}
+        <div style={{ display: "grid", gap: 14 }}>
+          <div className="card">
+            <h3>今日备赛任务 <span className="hint" style={{ fontWeight: 400 }}>{doneN}/{PREP_TASKS.length}</span></h3>
+            <div className="progress"><i style={{ width: `${(doneN / PREP_TASKS.length) * 100}%` }} /></div>
+            <div className="tasklist">
+              {PREP_TASKS.map((t, i) => (
+                <label key={t} className={done[i] ? "done" : ""}>
+                  <input type="checkbox" checked={done[i]} onChange={() => setDone((d) => d.map((v, j) => (j === i ? !v : v)))} />
+                  {t}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="card">
+            <h3>热门知识点</h3>
+            <div className="klist">
+              {KNOWLEDGE_POINTS.map((k) => (
+                <div key={k.t} className="krow">{k.t}<span className="heat">{k.heat}</span></div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -114,15 +155,31 @@ export function ModulesPage({ ctx }: { ctx: any }) {
 
   return (
     <>
+      <div className="card" style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 260 }}>
+          <b style={{ fontSize: 14 }}>模块库 · 选型</b>
+          <p className="hint" style={{ margin: "3px 0 0" }}>
+            这里是<b>可选步骤</b>：浏览模块资料、查接口与坑点。点「选用」把手头有的模块加入优先清单，
+            生成方案时会优先考虑它们；不选也能正常生成方案。
+          </p>
+        </div>
+        {ctx.shortlist.length > 0 && (
+          <>
+            <span className="chip green">已选用 {ctx.shortlist.length} 个</span>
+            <button className="btn ghost sm" onClick={() => ctx.setShortlist([])}>清空</button>
+          </>
+        )}
+        <button className="btn sm" onClick={() => ctx.setPage("solution")}>
+          {ctx.shortlist.length ? "带着选用模块去生成方案 →" : "去方案生成 →"}
+        </button>
+      </div>
+
       <div className="filterbar">
         <input placeholder="搜索模块 / 型号 / 功能 / 芯片…" value={q} onChange={(e) => setQ(e.target.value)} />
         <button className={"fchip" + (cat === "" ? " on" : "")} onClick={() => setCat("")}>全部</button>
         {CATEGORY_TREE.map((c) => (
           <button key={c.key} className={"fchip" + (cat === c.key ? " on" : "")} onClick={() => setCat(c.key)}>{c.icon} {c.label}</button>
         ))}
-        <span className="hint" style={{ marginLeft: "auto" }}>
-          已选用 {ctx.shortlist.length} 个 · 生成方案时优先考虑
-        </span>
       </div>
 
       <div className="grid cols-3">
@@ -131,8 +188,7 @@ export function ModulesPage({ ctx }: { ctx: any }) {
           return (
             <div key={m.id} className="card mod-card">
               <div style={{ display: "flex", gap: 12 }}>
-                <ModuleThumb id={m.id} hasImage={m.has_image} icon={modIcon(m.category)}
-                  size={84} style={{ flexShrink: 0 }} />
+                <ModuleThumb m={m} size={84} />
                 <div style={{ minWidth: 0 }}>
                   <b>{m.name}</b>
                   <div className="hint">{m.main_chip} · {m.description?.slice(0, 34)}…</div>
@@ -174,12 +230,14 @@ export function ModuleDetailModal({ detail, onClose, onPick, picked }: { detail:
         <h3 style={{ marginTop: 0 }}>{detail.name} <CertBadge s={detail.certification_status} />
           {detail._completeness != null && <span className="chip">数据完整度 {detail._completeness}%</span>}</h3>
         <p className="hint">{categoryLabel(detail.category)} · {detail.main_chip}</p>
-        {detail.has_image && (
-          /* eslint-disable-next-line @next/next/no-img-element */
-          <img src={`/api/modules/${encodeURIComponent(detail.id)}/image`} alt={detail.name}
-            style={{ width: "100%", maxWidth: 320, borderRadius: 10, border: "1px solid var(--line)",
-                     display: "block", margin: "0 0 12px" }}
-            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+        {(detail.images || []).length > 0 && (
+          <div className="module-gallery">
+            {(detail.images || []).slice(0, 4).map((src: string, i: number) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img key={i} src={src} alt={`${detail.name} 图 ${i + 1}`} loading="lazy"
+                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+            ))}
+          </div>
         )}
         <p>{detail.description}</p>
         <h4>接口定义</h4>

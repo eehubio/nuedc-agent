@@ -53,21 +53,10 @@ npm run dev                    # http://localhost:3000
 
 数据库使用 Neon Postgres：在 https://neon.tech 建库后把连接串填入 `DATABASE_URL`（本地开发建议用 Neon 的 dev 分支，免费额度足够）。
 
-## 部署：Web 与 Worker 必须分开
-
-> **重要：Vercel 只部署 Web，Worker 必须独立部署。**
-> Vercel 是 Serverless，函数随请求启停、没有常驻进程，无法消费 `agent_tasks` 队列。
-> 只部署 Web 的话，任务会一直停在 `queued` 永远不被执行。
-> 二者共用同一个 `DATABASE_URL`（同一个 Neon 库），通过队列表通信。
-
-### 1）Web（Vercel）
+## 部署到 Vercel
 
 1. 在 [Neon](https://neon.tech) 创建数据库，复制连接串（`postgresql://...`）。
-2. `vercel` 部署（或连 GitHub 仓库），在 Vercel 环境变量里配置 `.env.example` 中的项（至少 `DATABASE_URL`、`DB_DRIVER=neon_http`、`LLM_PROVIDER`、对应的 LLM Key）。
-
-   > `DB_DRIVER` 不配也能跑（会按 `DATABASE_URL` 自动判断），但**建议显式设为 `neon_http`**：
-   > 自动判断依赖主机名匹配 `*.neon.tech`，若将来换成自定义域名或代理端点会误判成
-   > `postgres_pool`，进而尝试 TCP 连接而失败。三种取值见 `.env.example`。
+2. `vercel` 部署（或连 GitHub 仓库），在 Vercel 环境变量里配置 `.env.example` 中的项（至少 `DATABASE_URL`、`LLM_PROVIDER`、对应的 LLM Key）。
 3. 首次部署后本地跑一次初始化（指向线上库）：
    ```bash
    DATABASE_URL=postgresql://... npm run db:init
@@ -75,47 +64,6 @@ npm run dev                    # http://localhost:3000
    ```
 
 `vercel.json` 已把 `/api/agent` 与 `/api/report` 的超时提到 120s（方案与报告生成较慢）。
-
-### 2）Worker（独立常驻，任选一种）
-
-必须跑在能保持常驻进程的地方：自有服务器、云主机、Railway/Fly.io/Render，或任何容器平台。
-
-```bash
-# 直接跑
-DATABASE_URL=postgresql://... npm run worker
-
-# pm2 常驻
-pm2 start npm --name nuedc-worker -- run worker
-
-# Docker（推荐）
-docker build -f docker/Dockerfile.worker -t nuedc-worker:latest .
-docker run -d --name nuedc-worker --restart unless-stopped \
-  -e DATABASE_URL='postgresql://...' \
-  -e GEMINI_API_KEY='...' \
-  -e WORKER_HEAVY_SLOTS=2 -e WORKER_LIGHT_SLOTS=6 \
-  nuedc-worker:latest
-```
-
-Worker 环境变量：`DB_DRIVER`（与 Web 保持一致，Neon 用 `neon_http`）、`WORKER_ID`（默认 `hostname:pid`）、`WORKER_HEAVY_SLOTS`（默认 2）、
-`WORKER_LIGHT_SLOTS`（默认 6）、`WORKER_POLL_MS`（默认 1500）。
-可以横向扩多个 Worker：认领用 `FOR UPDATE SKIP LOCKED`，不会重复消费。
-
-### 3）健康检查与告警
-
-| 端点 | 用途 | 失败语义 |
-| --- | --- | --- |
-| `GET /api/health` | 存活探针（liveness） | 只看 Web 进程存活，不查库 |
-| `GET /api/ready` | 就绪探针（readiness）+ 队列告警 | 数据库不可达返回 **503** |
-
-`/api/ready` 的 `alarms` 字段汇总以下告警（供 Uptime Kuma / Prometheus blackbox / 云监控抓取）：
-
-- 无活动 Worker 但队列有任务待处理
-- 队列积压超阈值（`QUEUE_BACKLOG_ALARM`，默认 200）
-- Worker 心跳超时（`worker_heartbeats` 超过 3 个租约周期未续期）
-- 近 1 小时死信激增（≥20）
-
-Worker 容器自身的健康以心跳新鲜度为准，`docker/Dockerfile.worker` 的 `HEALTHCHECK`
-调用 `scripts/worker-healthcheck.mts` 直接查 `worker_heartbeats`，过期即让编排系统重启。
 
 ## 嵌入 ezPLM
 

@@ -31,22 +31,6 @@ export function inputHash(taskType: string, input: unknown): string {
   return createHash("sha256").update(taskType + JSON.stringify(input)).digest("hex").slice(0, 32);
 }
 
-/** 任务去重键：严格限定到「同一用户 + 同一项目 + 同一 agent + 同一 Tier + 同一输入」。
- *  绝不能只按 input_hash 去重 —— 那会让不同用户/项目/Tier 命中彼此的任务，
- *  造成跨租户数据泄漏与配额越权。公共结果复用只走 model_cache，不复用他人任务。 */
-export function taskDedupKey(opts: {
-  ownerRef: string | null; projectId: string | null; agentType: string; tier: string; inputHash: string;
-}): string {
-  const payload = JSON.stringify({
-    o: opts.ownerRef || "",
-    p: opts.projectId || "",
-    a: opts.agentType,
-    t: opts.tier,
-    h: opts.inputHash,
-  });
-  return createHash("sha256").update(payload).digest("hex").slice(0, 40);
-}
-
 export async function cacheGet(key: string): Promise<{ output: string; provider: string; model: string } | null> {
   try {
     await ensureSchema();

@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { SCHEMA_SQL } from "./schema";
+import { SCHEMA_SQL } from "./db";
 
 /** 版本化数据库迁移（诊断 5.4）。
  *  - 每个迁移一个编号，执行过的记录在 schema_migrations 表
@@ -429,100 +429,6 @@ ALTER TABLE modules ADD COLUMN IF NOT EXISTS owner_ref TEXT;
 ALTER TABLE modules ADD COLUMN IF NOT EXISTS org_ref TEXT;
 ALTER TABLE modules ADD COLUMN IF NOT EXISTS inventory_qty INTEGER DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_modules_scope ON modules(scope, certification_status);
-`,
-  },
-  {
-    id: 16,
-    name: "task_dedup_and_retry",
-    sql: `
--- 结构化重试与去重字段
-ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS dedup_key TEXT;
-ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS retryable INTEGER;
-ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS provider_error_code TEXT;
-ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS cost_class TEXT;
-
--- 幂等键改为「按用户」唯一：不同用户可用相同 key 互不干扰，禁止跨用户覆盖
-DROP INDEX IF EXISTS idx_tasks_idem;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idem_owner
-  ON agent_tasks(owner_ref, idempotency_key) WHERE idempotency_key IS NOT NULL;
-
--- 活动任务并发去重：同一 dedup_key 同时只允许一条 queued/running 任务
--- 该部分唯一索引让 INSERT ... ON CONFLICT DO NOTHING 成为原子幂等的唯一真相来源
-CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_dedup
-  ON agent_tasks(dedup_key) WHERE status IN ('queued','running') AND dedup_key IS NOT NULL;
-`,
-  },
-  {
-    id: 17,
-    name: "artifact_partial_metadata",
-    sql: `
-ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS metadata TEXT;
-ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS human_review_required INTEGER DEFAULT 0;
-`,
-  },
-  {
-    id: 18,
-    name: "provider_task_health",
-    sql: `
-CREATE TABLE IF NOT EXISTS provider_task_health (
-  provider TEXT NOT NULL,
-  model TEXT NOT NULL,
-  task_type TEXT NOT NULL,
-  window_start TIMESTAMPTZ NOT NULL,
-  transport_ok INTEGER DEFAULT 0, transport_total INTEGER DEFAULT 0,
-  parse_ok INTEGER DEFAULT 0,     parse_total INTEGER DEFAULT 0,
-  schema_ok INTEGER DEFAULT 0,    schema_total INTEGER DEFAULT 0,
-  timeout_n INTEGER DEFAULT 0,    rate429_n INTEGER DEFAULT 0,
-  updated_at TIMESTAMPTZ DEFAULT now(),
-  PRIMARY KEY (provider, model, task_type, window_start)
-);
-CREATE INDEX IF NOT EXISTS idx_ptask_health ON provider_task_health(provider, model, task_type, window_start DESC);
-`,
-  },
-  {
-    id: 19,
-    name: "publish_strictness_and_worker_heartbeats",
-    sql: `
--- 正式需求溯源类型（区分 AI 提取 / 工作人员补充）
-ALTER TABLE problem_requirements ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'AI_EXTRACTED';
-ALTER TABLE problem_requirements ADD COLUMN IF NOT EXISTS staff_reviewer TEXT;
-ALTER TABLE problem_requirements ADD COLUMN IF NOT EXISTS staff_reason TEXT;
-
--- Contest 预期评分结构（发布时精确核对）
-ALTER TABLE problem_versions ADD COLUMN IF NOT EXISTS expected_total_score NUMERIC(8,2);
-ALTER TABLE problem_versions ADD COLUMN IF NOT EXISTS expected_report_score NUMERIC(8,2);
-ALTER TABLE problem_versions ADD COLUMN IF NOT EXISTS expected_basic_score NUMERIC(8,2);
-ALTER TABLE problem_versions ADD COLUMN IF NOT EXISTS expected_advanced_score NUMERIC(8,2);
-
--- Worker 心跳表（失联 / 积压报警）
-CREATE TABLE IF NOT EXISTS worker_heartbeats (
-  worker_id TEXT PRIMARY KEY,
-  host TEXT, pid INTEGER,
-  heavy_slots INTEGER, light_slots INTEGER,
-  in_flight INTEGER DEFAULT 0,
-  last_beat_at TIMESTAMPTZ DEFAULT now(),
-  started_at TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_worker_beat ON worker_heartbeats(last_beat_at);
-`,
-  },
-  {
-    id: 20,
-    name: "worker_deployed_sha",
-    sql: `
--- Worker 上报自身代码版本，用于与 Web 版本比对（两者独立部署，容易漂移）
-ALTER TABLE worker_heartbeats ADD COLUMN IF NOT EXISTS deployed_sha TEXT;
-`,
-  },
-  {
-    id: 21,
-    name: "module_image",
-    sql: `
--- 模块图片：base64 data URL，单独成列而非塞进 data JSON，
--- 便于列表查询时用 SELECT 明确排除（图片体积远大于其他字段，
--- 列表接口带上会让响应膨胀几十倍）
-ALTER TABLE modules ADD COLUMN IF NOT EXISTS image TEXT;
-ALTER TABLE modules ADD COLUMN IF NOT EXISTS image_updated_at TIMESTAMPTZ;
 `,
   },
 ];

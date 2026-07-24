@@ -27,25 +27,37 @@ export async function POST(req: NextRequest) {
     if (denied) return denied;
   }
 
-  // taskType 与优先级来自策略表；inputHash + 去重键严格限定到本用户/项目/agent/Tier
+  // 并发去重：同项目同 Agent 已有活动任务 → 直接返回该任务（防止连点两下并行烧两次 LLM）
+  if (projectId) {
+    const act = await db().execute({
+      sql: "SELECT task_id, status FROM agent_tasks WHERE project_id=? AND agent_type=? AND status IN ('queued','running') LIMIT 1",
+      args: [projectId, agent],
+    });
+    if (act.rows.length) return NextResponse.json({ task_id: act.rows[0].task_id, status: act.rows[0].status, deduped: true }, { status: 200 });
+  }
+
+  // 幂等：同 key 已有任务直接返回，防重复扣费
+  if (body.idempotency_key) {
+    const ex = await db().execute({ sql: "SELECT task_id, status FROM agent_tasks WHERE idempotency_key=?", args: [body.idempotency_key] });
+    if (ex.rows.length) return NextResponse.json({ task_id: ex.rows[0].task_id, status: ex.rows[0].status, deduped: true }, { status: 200 });
+  }
+
+  // taskType 与优先级来自策略表；inputHash 用于相同输入直接复用已有任务
   const { AGENT_TASK_TYPE, policyFor } = await import("@/lib/model-gateway/task-policy");
   const { modelGateway } = await import("@/lib/model-gateway");
   const taskType = AGENT_TASK_TYPE[agent] || "GENERAL_QA";
   const policy = policyFor(taskType as any);
   const hash = modelGateway.inputHash(taskType, { input: body.input || {}, project: projectId });
-  // 去重键把「相同输入」限定在同一 owner+project+agent+tier 之内，杜绝跨用户命中
-  const dedupKey = modelGateway.taskDedupKey({
-    ownerRef: id.owner, projectId, agentType: agent, tier, inputHash: hash,
-  });
 
-  // 幂等键：按用户唯一（迁移 16 的 UNIQUE(owner_ref, idempotency_key)）。
-  // 不同用户可用相同 key，互不覆盖。
-  if (body.idempotency_key) {
-    const ex = await db().execute({
-      sql: "SELECT task_id, status FROM agent_tasks WHERE owner_ref=? AND idempotency_key=?",
-      args: [id.owner, body.idempotency_key],
-    });
-    if (ex.rows.length) return NextResponse.json({ task_id: ex.rows[0].task_id, status: ex.rows[0].status, deduped: true, reason: "idempotency_key" }, { status: 200 });
+  // 相同 inputHash 的近期任务直接复用（防重复扣费）
+  const dup = await db().execute({
+    sql: `SELECT task_id, status FROM agent_tasks
+          WHERE input_hash=? AND created_at > now() - interval '10 minutes'
+            AND status IN ('queued','running','ok') ORDER BY created_at DESC LIMIT 1`,
+    args: [hash],
+  }).catch(() => ({ rows: [] as any[] }));
+  if (dup.rows.length) {
+    return NextResponse.json({ task_id: dup.rows[0].task_id, status: dup.rows[0].status, deduped: true, reason: "input_hash" }, { status: 200 });
   }
 
   // 每用户重型任务并发上限
@@ -84,106 +96,13 @@ export async function POST(req: NextRequest) {
   }
   // 模型名不在建单时臆测（选路由网关在执行时决定，可能容灾切换）——执行完成后回写实际值
   const model: string | null = null;
-
-  // 原子幂等去重：依赖迁移 16 的两个唯一约束
-  //   1) 部分唯一索引 idx_tasks_active_dedup: UNIQUE(dedup_key) WHERE status IN ('queued','running')
-  //   2) idx_tasks_idem_owner: UNIQUE(owner_ref, idempotency_key)
-  // ON CONFLICT 只能声明一个冲突目标，因此 dedup_key 走 ON CONFLICT DO NOTHING，
-  // idempotency_key 的唯一冲突由 catch 捕获 —— 两条并发请求都通过了上面的 SELECT 时，
-  // 其中一条必然在这里撞唯一约束，必须退还它预占的配额并返回既有任务，而不是抛 500。
-  let ins: { rows: Record<string, unknown>[] };
-  type ConflictKind = null | "IDEMPOTENCY_CONFLICT" | "ACTIVE_DEDUP_CONFLICT" | "UNEXPECTED_UNIQUE_CONFLICT";
-  let conflictKind: ConflictKind = null;
-  let conflictDetail = "";
-  try {
-    ins = await db().execute({
-      sql: `INSERT INTO agent_tasks (task_id, project_id, agent_type, status, input, tier, idempotency_key, model,
-              task_type, priority, input_hash, dedup_key, owner_ref, queue_name, cost_class, quota_ref, quota_kind, scheduled_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, now())
-            ON CONFLICT (dedup_key) WHERE status IN ('queued','running') AND dedup_key IS NOT NULL DO NOTHING
-            RETURNING task_id`,
-      args: [taskId, projectId, agent, "queued", JSON.stringify(body.input || {}), tier, body.idempotency_key || null, model,
-        taskType, policy.priority, hash, dedupKey, id.owner, policy.concurrencyClass, policy.costClass, quotaRef, quotaKind],
-    });
-  } catch (e: any) {
-    // 23505 = unique_violation。必须区分是哪一个唯一约束 ——
-    // 把所有唯一冲突都当成 idempotency 冲突，会在其他约束冲突时
-    // 返回一个与本次请求无关的既有任务（错误地把别的任务交给用户）。
-    const msg = String(e?.message || e);
-    const detail = String(e?.detail || e?.constraint || "");
-    const code = String(e?.code || "");
-    const isUnique = code === "23505" || /duplicate key|unique constraint|already exists/i.test(msg);
-    if (!isUnique) {
-      // 非唯一冲突的意外错误：退还预占，避免配额泄漏
-      if (quotaRef && quotaKind) {
-        const { refundQuota } = await import("@/lib/usage");
-        await refundQuota(id.owner, quotaKind, quotaRef).catch(() => {});
-      }
-      throw e;
-    }
-    const hay = `${msg} ${detail}`;
-    if (/idx_tasks_idem_owner|owner_ref.*idempotency_key|idempotency_key.*owner_ref/i.test(hay)) {
-      conflictKind = "IDEMPOTENCY_CONFLICT";
-    } else if (/idx_tasks_active_dedup|dedup_key/i.test(hay)) {
-      conflictKind = "ACTIVE_DEDUP_CONFLICT";
-    } else {
-      conflictKind = "UNEXPECTED_UNIQUE_CONFLICT";
-    }
-    ins = { rows: [] };
-    conflictDetail = hay.slice(0, 300);
-  }
-
-  // 未知唯一冲突：退款 + 结构化日志 + 409，绝不返回无关的既有任务
-  if (conflictKind === "UNEXPECTED_UNIQUE_CONFLICT") {
-    if (quotaRef && quotaKind) {
-      const { refundQuota } = await import("@/lib/usage");
-      await refundQuota(id.owner, quotaKind, quotaRef).catch(() => {});
-    }
-    console.error(JSON.stringify({
-      event: "unexpected_unique_conflict", owner: id.owner, agent, task_type: taskType,
-      dedup_key: dedupKey, idempotency_key: body.idempotency_key || null, detail: conflictDetail,
-    }));
-    return NextResponse.json({
-      error: "任务创建遇到未预期的唯一约束冲突，请重试；若持续出现请联系管理员",
-      error_code: "UNEXPECTED_UNIQUE_CONFLICT",
-    }, { status: 409 });
-  }
-
-  if (conflictKind === "IDEMPOTENCY_CONFLICT") {
-    // 并发幂等冲突：退还本次预占，返回先到那一条已存在的任务（同一个 task_id）
-    if (quotaRef && quotaKind) {
-      const { refundQuota } = await import("@/lib/usage");
-      await refundQuota(id.owner, quotaKind, quotaRef).catch(() => {});
-    }
-    const exist = await db().execute({
-      sql: "SELECT task_id, status FROM agent_tasks WHERE owner_ref=? AND idempotency_key=?",
-      args: [id.owner, body.idempotency_key || null],
-    });
-    if (exist.rows.length) {
-      return NextResponse.json({ task_id: exist.rows[0].task_id, status: exist.rows[0].status, deduped: true, reason: "idempotency_key" }, { status: 200 });
-    }
-    // 极端竞态：冲突行在两句之间消失，让客户端重试（不返回 500）
-    return NextResponse.json({ error: "任务提交冲突，请重试" }, { status: 409 });
-  }
-
-  if (!ins.rows.length) {
-    // 去重命中：已有活动任务在跑。退还刚预占的配额，返回既有任务。
-    if (quotaRef && quotaKind) {
-      const { refundQuota } = await import("@/lib/usage");
-      await refundQuota(id.owner, quotaKind, quotaRef);
-    }
-    const exist = await db().execute({
-      sql: `SELECT task_id, status FROM agent_tasks
-            WHERE dedup_key=? AND status IN ('queued','running')
-            ORDER BY created_at DESC LIMIT 1`,
-      args: [dedupKey],
-    });
-    if (exist.rows.length) {
-      return NextResponse.json({ task_id: exist.rows[0].task_id, status: exist.rows[0].status, deduped: true, reason: "active_dedup" }, { status: 200 });
-    }
-    // 极端竞态：活动任务在两句之间已终态 —— 让客户端重试
-    return NextResponse.json({ error: "任务提交冲突，请重试" }, { status: 409 });
-  }
+  await db().execute({
+    sql: `INSERT INTO agent_tasks (task_id, project_id, agent_type, status, input, tier, idempotency_key, model,
+            task_type, priority, input_hash, owner_ref, queue_name, quota_ref, quota_kind, scheduled_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, now())`,
+    args: [taskId, projectId, agent, "queued", JSON.stringify(body.input || {}), tier, body.idempotency_key || null, model,
+      taskType, policy.priority, hash, id.owner, policy.concurrencyClass, quotaRef, quotaKind],
+  });
   return NextResponse.json({ task_id: taskId, status: "queued", model }, { status: 202 });
 }
 

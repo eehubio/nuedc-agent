@@ -30,7 +30,7 @@ describe("Schema strict：校验失败即调用失败", () => {
     vi.doMock("../lib/model-gateway/cache", () => ({
       PROMPT_VERSION: "v2", SCHEMA_VERSION: "s1",
       buildCacheKey: () => "k", cacheGet: async () => null,
-      cacheSet: async () => {}, cacheDelete: async () => {}, inputHash: () => "h", taskDedupKey: () => "d",
+      cacheSet: async () => {}, cacheDelete: async () => {}, inputHash: () => "h",
     }));
     const { modelGateway } = await import("../lib/model-gateway");
     // mock 返回的 solution 结构不含 impossible_field，用不可能满足的 schema 触发失败
@@ -52,7 +52,7 @@ describe("Schema strict：校验失败即调用失败", () => {
     vi.doMock("../lib/model-gateway/cache", () => ({
       PROMPT_VERSION: "v2", SCHEMA_VERSION: "s1",
       buildCacheKey: () => "k", cacheGet: async () => null,
-      cacheSet: async () => {}, cacheDelete: async () => {}, inputHash: () => "h", taskDedupKey: () => "d",
+      cacheSet: async () => {}, cacheDelete: async () => {}, inputHash: () => "h",
     }));
     const { modelGateway } = await import("../lib/model-gateway");
     const r = await modelGateway.run({
@@ -73,7 +73,7 @@ describe("Schema strict：校验失败即调用失败", () => {
       buildCacheKey: (o: any) => `${o.provider}:${o.model}`,
       cacheGet: async () => null,
       cacheSet: async (k: string) => { sets.push(k); },
-      cacheDelete: async () => {}, inputHash: () => "h", taskDedupKey: () => "d",
+      cacheDelete: async () => {}, inputHash: () => "h",
     }));
     const { modelGateway } = await import("../lib/model-gateway");
     await modelGateway.run({
@@ -95,7 +95,7 @@ describe("Schema strict：校验失败即调用失败", () => {
       cacheGet: async () => ({ output: JSON.stringify({ old_shape: true }), provider: "mock", model: "mock-model" }),
       cacheSet: async () => {},
       cacheDelete: async (k: string) => { deleted.push(k); },
-      inputHash: () => "h", taskDedupKey: () => "d",
+      inputHash: () => "h",
     }));
     const { modelGateway } = await import("../lib/model-gateway");
     const r = await modelGateway.run({
@@ -128,7 +128,7 @@ describe("缓存归属：容灾切换后不得张冠李戴", () => {
       buildCacheKey: (o: any) => `${o.provider}:${o.model}`,
       cacheGet: async () => null,
       cacheSet: async (k: string, _p: any, _o: string, provider: string) => { written.push({ key: k, provider }); },
-      cacheDelete: async () => {}, inputHash: () => "h", taskDedupKey: () => "d",
+      cacheDelete: async () => {}, inputHash: () => "h",
     }));
     // 构造：第一家抛错，第二家成功
     const { ProviderError } = await import("../lib/model-gateway/providers/base");

@@ -65,17 +65,12 @@ export interface CapabilityQuery {
 
 export async function queryCapabilities(qy: CapabilityQuery) {
   await ensureSchema();
-  // 注意只取 has_image 布尔值而非 image 本体：图片是几十 KB 的 base64，
-  // 列表带上会让响应膨胀几十倍。前端凭该标志决定是否请求 /api/modules/:id/image
-  const rs = await db().execute(
-    "SELECT id, data, certification_status, downloads, rating, (image IS NOT NULL) AS has_image FROM modules LIMIT 1000",
-  );
+  const rs = await db().execute("SELECT id, data, certification_status, downloads, rating FROM modules LIMIT 1000");
   let list = rs.rows.map((r) => ({
     ...JSON.parse(String(r.data)),
     certification_status: String(r.certification_status),
     downloads: Number(r.downloads || 0),
     rating: Number(r.rating || 0),
-    has_image: r.has_image === true || r.has_image === 1 || r.has_image === "t",
   }));
 
   if (qy.status !== "all") {

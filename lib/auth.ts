@@ -2,7 +2,6 @@ import type { NextRequest } from "next/server";
 import type { UserTier, ModuleCertState } from "./types";
 import { MODULE_CERT_STATES, PAID_DOWNLOAD_MIN_STATE } from "./types";
 import { ADMIN_COOKIE, verifyAdminToken, safeEqual } from "./admin-session";
-import { db, ensureSchema } from "./db";
 
 export function safeEqualStr(a: string, b: string): boolean { return safeEqual(a, b); }
 
@@ -89,6 +88,7 @@ export function canAccessProject(tier: UserTier, projectOwner: string | null, re
 
 /** 项目访问校验：所有者 / 成员 / admin。返回 null = 放行。 */
 export async function assertProjectAccess(req: NextRequest, projectId: string): Promise<NextResponse | null> {
+  const { db, ensureSchema } = await import("./db");
   await ensureSchema();
   const tier = resolveTier(req);
   if (tier === "admin") return null;

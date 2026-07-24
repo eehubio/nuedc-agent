@@ -3,7 +3,6 @@ import { llmJson } from "../llm";
 import { registerAgent } from "./base";
 import { computeScore, type TestRecord } from "../rules/test-scoring";
 import type { Requirement } from "../types";
-import { saveArtifact } from "../artifacts";
 
 // ============ test_scoring：测试计划（LLM）+ 判定与得分（纯规则）============
 registerAgent("test_scoring", async (input) => {
@@ -41,6 +40,7 @@ registerAgent("test_scoring", async (input) => {
 
   // 拆分产物：计划 / 实测记录 / 得分 各自独立版本化
   if (input.project_id_for_artifacts) {
+    const { saveArtifact } = await import("../artifacts");
     const pid = input.project_id_for_artifacts;
     if (plan?.test_cases?.length) await saveArtifact({ projectId: pid, type: "test_plan", content: plan, createdBy: "test_scoring" });
     if (records.length) await saveArtifact({ projectId: pid, type: "test_record", content: { records }, createdBy: "test_scoring" });
