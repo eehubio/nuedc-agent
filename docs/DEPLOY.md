@@ -43,6 +43,30 @@ pm2 start npm --name nuedc-worker -- run worker
 pm2 logs nuedc-worker
 ```
 
+### 容器部署（Railway / Fly.io / 自建 Docker）
+
+镜像定义在 `docker/Dockerfile.worker`。Railway 配置：
+
+- Builder: **Dockerfile**
+- Dockerfile path: **docker/Dockerfile.worker**
+- Restart policy: on failure（Worker 在数据库不可用时会主动退出，靠重启策略恢复）
+
+必需环境变量：`DATABASE_URL`（与 Web 同库）、`GEMINI_API_KEY`。
+连普通 Postgres 时驱动会自动切换到连接池，无需额外配置。
+
+可调：
+
+```
+WORKER_HEAVY_SLOTS=2              # 重型任务并发
+WORKER_LIGHT_SLOTS=6              # 轻型任务并发
+WORKER_SHUTDOWN_GRACE_MS=30000    # 优雅退出宽限期
+WORKER_MAX_CONSECUTIVE_FAILURES=10  # 连续失败多少次后退出重启
+```
+
+**故障行为**：数据库不可达时 Worker 会打印原因并退出（非僵死），
+由编排平台重启；收到 SIGTERM 会停止认领、等待在途任务、释放租约后退出，
+超过宽限期强制退出，容器一定停得掉。
+
 看到 `启动：重型槽位 2 · 轻型槽位 6` 即正常。
 
 可调参数：

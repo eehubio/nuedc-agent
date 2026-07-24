@@ -94,3 +94,40 @@ describe("Worker 启动冒烟", () => {
     expect(out).not.toMatch(/ERR_UNSUPPORTED_RESOLVE_REQUEST|resolve module specifier/);
   }, 30_000);
 });
+
+describe("容器化部署健壮性", () => {
+  it("数据库不可用时立即退出并说明原因，不僵死在报错循环", async () => {
+    const { out, code } = await runWorker(
+      { DATABASE_URL: "postgresql://u:p@127.0.0.1:59999/none", ENABLE_MOCK_PROVIDER: "1" },
+      20_000,
+    );
+    expect(out).toMatch(/数据库不可用|无法启动/);
+    expect(out).toMatch(/DATABASE_URL/);
+    expect(code).not.toBeNull();          // 必须真的退出
+  }, 40_000);
+
+  it("Worker 容器镜像存在且只复制运行所需文件", async () => {
+    const fs = await import("node:fs");
+    expect(fs.existsSync("docker/Dockerfile.worker"), "缺少 Worker 容器镜像定义").toBe(true);
+    const df = fs.readFileSync("docker/Dockerfile.worker", "utf8");
+    // 直接跑 tsx，不经 npm —— npm 不转发 SIGTERM 会导致优雅退出失效
+    expect(df).toContain('CMD ["npx", "tsx", "scripts/agent-worker.mts"]');
+    expect(df).toContain("USER worker");   // 非 root 运行
+    for (const p of ["lib", "scripts", "data"]) expect(df).toContain(`COPY ${p} ./${p}`);
+  });
+
+  it("优雅退出有硬超时，容器一定停得掉", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("scripts/agent-worker.mts", "utf8");
+    expect(src).toContain("WORKER_SHUTDOWN_GRACE_MS");
+    expect(src).toContain("强制退出");
+    expect(src).toContain("process.exit(130)");   // 二次信号立即退出
+  });
+
+  it("连续认领失败达上限后退出，交给编排平台重启", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("scripts/agent-worker.mts", "utf8");
+    expect(src).toContain("MAX_CONSECUTIVE_FAILURES");
+    expect(src).toContain("退出以便编排平台重启");
+  });
+});

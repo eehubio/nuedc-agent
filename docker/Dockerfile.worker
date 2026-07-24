@@ -1,0 +1,48 @@
+# 后台 Worker 容器镜像（Railway / Fly.io / 自建 Docker 通用）
+#
+# Worker 消费 agent_tasks 队列并执行 Agent，与 Web 端共用同一个数据库。
+# 部署要点：
+#   - 必须设置 DATABASE_URL（与 Web 同库）与至少一个模型 Provider 的 API Key
+#   - 连普通 Postgres 时 db 层会自动使用连接池驱动，无需额外配置
+#   - 容器收到 SIGTERM 会停止认领新任务、等待在途任务完成、释放租约后退出
+#
+# 本地构建与运行：
+#   docker build -f docker/Dockerfile.worker -t nuedc-worker .
+#   docker run --rm -e DATABASE_URL=... -e GEMINI_API_KEY=... nuedc-worker
+
+FROM node:20-bookworm-slim AS deps
+WORKDIR /app
+
+# 只复制清单文件，最大化利用镜像层缓存
+COPY package.json package-lock.json* ./
+# Worker 需要 tsx 运行 .mts，因此保留 devDependencies
+RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+FROM node:20-bookworm-slim AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    WORKER_HEAVY_SLOTS=2 \
+    WORKER_LIGHT_SLOTS=6 \
+    WORKER_POLL_MS=1500
+
+# 仅复制 Worker 运行所需的代码，不含 Next.js 页面与构建产物
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json tsconfig.json ./
+COPY lib ./lib
+COPY scripts ./scripts
+COPY data ./data
+
+# 以非 root 用户运行
+RUN useradd --system --create-home --shell /usr/sbin/nologin worker \
+ && chown -R worker:worker /app
+USER worker
+
+# 存活检查：Worker 无 HTTP 端口，改为确认进程仍在运行
+HEALTHCHECK --interval=60s --timeout=10s --start-period=20s --retries=3 \
+  CMD pgrep -f "agent-worker" > /dev/null || exit 1
+
+# 直接用 tsx 运行，避免经 npm 转发导致 SIGTERM 无法送达子进程
+# （npm 不会转发信号，会让优雅退出失效）
+CMD ["npx", "tsx", "scripts/agent-worker.mts"]

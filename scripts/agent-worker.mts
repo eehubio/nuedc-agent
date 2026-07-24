@@ -29,6 +29,8 @@ const POLL_MS = Number(process.env.WORKER_POLL_MS || 1500);
 
 let shuttingDown = false;
 let inFlight = 0;
+let consecutiveFailures = 0;
+const MAX_CONSECUTIVE_FAILURES = Number(process.env.WORKER_MAX_CONSECUTIVE_FAILURES || 10);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function log(...args: any[]) {
@@ -118,9 +120,18 @@ async function consumeLoop(heavy: boolean, slots: number) {
     let task: ClaimedTask | null = null;
     try {
       task = await claimTask(WORKER_ID, { heavy });
+      consecutiveFailures = 0;
     } catch (e: any) {
-      log("认领异常:", String(e?.message || e).slice(0, 120));
-      await sleep(3000);
+      consecutiveFailures++;
+      log(`认领异常(${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}):`, String(e?.message || e).slice(0, 120));
+      // 数据库持续不可用时退出，交给编排平台重启，避免僵死进程占着租约
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        log("❌ 连续认领失败次数过多，退出以便编排平台重启");
+        shuttingDown = true;
+        await closeDb();
+        process.exit(1);
+      }
+      await sleep(Math.min(30_000, 3000 * consecutiveFailures));
       continue;
     }
     if (!task) { await sleep(POLL_MS); continue; }
@@ -132,14 +143,27 @@ async function consumeLoop(heavy: boolean, slots: number) {
 }
 
 async function main() {
-  await ensureSchema();
+  // 启动自检：数据库不可达时立刻退出并给出可读原因，
+  // 而不是卡在报错循环里 —— 那会让容器僵死、SIGTERM 也叫不动
+  try {
+    await ensureSchema();
+  } catch (e: any) {
+    log(`❌ 数据库不可用，Worker 无法启动：${String(e?.message || e).slice(0, 200)}`);
+    log("   请检查 DATABASE_URL 是否正确、数据库是否可从本容器访问。");
+    await closeDb();
+    process.exit(1);
+  }
   log(`启动：重型槽位 ${HEAVY_SLOTS} · 轻型槽位 ${LIGHT_SLOTS} · 轮询 ${POLL_MS}ms · 驱动 ${dbDriver()}`);
 
   const shutdown = async (sig: string) => {
-    if (shuttingDown) return;
+    if (shuttingDown) { log(`再次收到 ${sig}，强制退出`); process.exit(130); }
     shuttingDown = true;
-    log(`收到 ${sig}，停止认领新任务，等待 ${inFlight} 个在途任务完成…`);
-    const deadline = Date.now() + 120_000;
+    const graceMs = Number(process.env.WORKER_SHUTDOWN_GRACE_MS || 30_000);
+    log(`收到 ${sig}，停止认领新任务，等待 ${inFlight} 个在途任务完成（最多 ${graceMs / 1000}s）…`);
+    // 兜底：无论如何都要在宽限期后退出，避免容器停不掉
+    const hardExit = setTimeout(() => { log("⚠ 宽限期已到，强制退出"); process.exit(0); }, graceMs + 5000);
+    hardExit.unref?.();
+    const deadline = Date.now() + graceMs;
     while (inFlight > 0 && Date.now() < deadline) await sleep(500);
     // 未完成的任务释放租约，让其他 Worker 立刻接管
     await db().execute({
