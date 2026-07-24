@@ -75,3 +75,36 @@ describe("导航与流程", () => {
     expect(src).toContain("已从「模块选型」选用");
   });
 });
+
+describe("缩略图高度不得塌陷（回归防护）", () => {
+  it("thumb 有明确高度，不依赖会与内联样式冲突的 aspect-ratio", async () => {
+    const fs = await import("node:fs");
+    const css = fs.readFileSync("app/globals.css", "utf8");
+    // 基础高度必须存在
+    expect(css).toMatch(/\.mod-card \.thumb \{[\s\S]*?height:\s*74px/);
+    // 不能再出现 height:auto + aspect-ratio 的组合（首页卡片曾因此塌成 0 高）
+    expect(css).not.toMatch(/\.mod-card \.thumb \{ aspect-ratio: 1 \/ 1; height: auto/);
+  });
+
+  it("有图状态用 max-width/max-height 而非强制拉伸", async () => {
+    const fs = await import("node:fs");
+    const css = fs.readFileSync("app/globals.css", "utf8");
+    const block = css.slice(css.indexOf(".thumb.has-img img"));
+    expect(block).toContain("max-width: 100%");
+    expect(block).toContain("max-height: 100%");
+    expect(block).toContain("object-fit: contain");
+  });
+
+  it("后台 CMS 提供图片预览与删除", async () => {
+    const fs = await import("node:fs");
+    const src = fs.readFileSync("components/AdminClient.tsx", "utf8");
+    expect(src).toContain("module-gallery");
+    expect(src).toContain("图片无法加载");        // 防盗链时给出可操作提示
+  });
+
+  it("种子模块均含 images 字段（避免 undefined 导致渲染分支异常）", async () => {
+    const fs = await import("node:fs");
+    const mods = JSON.parse(fs.readFileSync("data/seed-modules.json", "utf8"));
+    for (const m of mods) expect(Array.isArray(m.images), m.id).toBe(true);
+  });
+});
